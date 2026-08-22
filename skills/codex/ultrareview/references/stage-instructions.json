@@ -1,30 +1,32 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "adversarial": [
     "Read scope.json first, then read and follow every file in scope.instruction_files.",
     "Complete the adversarial lane '{lane}' in one pass by directly inspecting repository source, reachable callers, relevant tests, and applicable contracts.",
     "Stay within scope.target, scope.topic, and scope.exclusions. Report only discrete actionable defects meeting scope.finding_standard; write an empty candidates list when none qualify.",
+    "For every candidate, write an intuitive manifestation with a concrete setup, ordered user/system steps, and the exact observable failure. Use verified_reproduction only when directly exercised and supported by verified test or command evidence; otherwise use reasoned_scenario. Do not paraphrase trigger or impact as the steps, and do not use placeholders such as 'the issue occurs'.",
     "Record exact repository paths and tight line ranges. Separate verified evidence from inference. Do not run checks that write the repository or any remote service.",
     "Write only the fixed #/$defs/adversarial JSON artifact to output_path. Before sending the receipt, execute the packet's validation_command argv exactly. Do not modify repository files, do not delegate, and reveal no finding content in the receipt."
   ],
   "dedup": [
     "Read scope.json first, then read and follow every file in scope.instruction_files.",
     "Read every adversarial artifact in input_paths and cover every raw ID in assigned_ids exactly once.",
-    "Merge candidates only when root cause, trigger, impact, and remedy are materially the same. Do not decide validity and do not drop doubtful unique candidates.",
+    "Merge candidates only when root cause, trigger, manifestation, impact, and remedy are materially the same. Preserve the clearest accurate setup, ordered steps, and failure result. Do not decide validity and do not drop doubtful unique candidates.",
     "Assign unique stable F### IDs, preserve a complete non-overlapping source_candidate_ids mapping, and provide a non-empty merge_basis.",
     "Write only the fixed #/$defs/dedup JSON artifact to output_path. Before sending the receipt, execute the packet's validation_command argv exactly. Work read-only, do not delegate, and reveal no finding content in the receipt."
   ],
   "refutation": [
     "Read scope.json first, then read and follow every file in scope.instruction_files.",
     "Read the dedup artifact in input_paths and evaluate every canonical ID in assigned_ids exactly once.",
-    "Directly inspect relevant source, callers, contracts, tests, and history when useful. Check reachability, scope, intent, persistent or operational impact, applicable convergence requirements, and recommendation proportionality.",
+    "Directly inspect relevant source, callers, contracts, tests, and history when useful. Check reachability, scope, intent, the accuracy and verification status of the manifestation steps, persistent or operational impact, applicable convergence requirements, and recommendation proportionality.",
+    "Actively challenge nitpicking findings and over-defensive remedies. Weigh realistic probability, impact, affected users, and duration against implementation complexity, new failure modes, and long-term maintenance debt. If an extremely unlikely, low-impact finding would require extra state, compatibility layers, broad retries, repair or migration logic, or other disproportionate machinery, prefer refute. If the underlying defect is real but the proposed remedy is too broad, use modify with the smallest proportionate recommendation. Do not dismiss irreversible data loss or security impact solely because its probability is low.",
     "Use verdict uphold, modify, refute, or unresolved. A modify result must include a complete same-ID replacement_finding; all other results must use null.",
     "Write only the fixed #/$defs/refutation JSON artifact to output_path. Before sending the receipt, execute the packet's validation_command argv exactly. Work read-only, do not delegate, and reveal no finding content in the receipt."
   ],
   "judgment": [
     "Read scope.json first, then read and follow every file in scope.instruction_files.",
     "Read the dedup and refutation artifacts in input_paths and issue one binding result for every disputed ID in assigned_ids exactly once.",
-    "Directly inspect relevant repository source, callers, contracts, tests, and history when useful. Resolve the dispute without adding a second semantic review round.",
+    "Directly inspect relevant repository source, callers, contracts, tests, and history when useful. Resolve the dispute, including whether the manifestation sequence and its verification label are accurate, without adding a second semantic review round.",
     "Use verdict uphold, modify, reject, or unresolved and record at least one non-empty resolved_points entry explaining the binding result. Modify requires a complete same-ID final_finding; all other verdicts must use null. A rejection must explain why the candidate does not qualify, and unresolved must state the material residual_risk.",
     "Write only the fixed #/$defs/judgment JSON artifact to output_path. Before sending the receipt, execute the packet's validation_command argv exactly. Work read-only, do not delegate, and reveal no finding content in the receipt."
   ]

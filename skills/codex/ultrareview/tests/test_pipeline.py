@@ -35,7 +35,7 @@ class PipelineCase(unittest.TestCase):
         self.scope_source = self.root / "prepared-scope.json"
         self.lenses_source = self.root / "prepared-lenses.json"
         write_json(self.scope_source, {
-            "schema_version": 2,
+            "schema_version": 3,
             "repository_path": str(self.repository),
             "review_kind": "topic",
             "target": "Synthetic persistence topic",
@@ -47,7 +47,7 @@ class PipelineCase(unittest.TestCase):
             "baseline_worktree_status": [],
         })
         write_json(self.lenses_source, {
-            "schema_version": 2,
+            "schema_version": 3,
             "reviewers": [{
                 "agent_id": "reviewer-01",
                 "lane": "state transitions",
@@ -117,6 +117,15 @@ class PipelineCase(unittest.TestCase):
             "context": "The synthetic path runs during a persistent mutation.",
             "trigger": "A deterministic test trigger reaches the path.",
             "impact": "A stored value can become unavailable after the operation.",
+            "manifestation": {
+                "kind": "reasoned_scenario",
+                "setup": "A stored record exists with value 100 and the affected mutation path is enabled.",
+                "steps": [
+                    "Run the mutation that enters sample.py lines 2 through 4.",
+                    "Reload the same record from persistent storage.",
+                ],
+                "failure": "The reloaded record no longer contains the previously stored value 100.",
+            },
             "evidence": [{
                 "kind": "source",
                 "location": {"path": "sample.py", "start_line": 2, "end_line": 4},
@@ -131,7 +140,7 @@ class PipelineCase(unittest.TestCase):
         packet_path, packet = self.one_packet("adversarial")
         artifact_path = Path(packet["output_path"])
         write_json(artifact_path, {
-            "schema_version": 2,
+            "schema_version": 3,
             "stage": "adversarial",
             "task_id": packet["task_id"],
             "attempt": packet["attempt"],
@@ -155,11 +164,71 @@ class PipelineCase(unittest.TestCase):
         self.assertIn("FINALIZED", result.stdout)
         self.command("validate-final")
         final = json.loads((self.run_root / "final" / "final.json").read_text(encoding="utf-8"))
-        self.assertEqual(final["schema_version"], 2)
+        self.assertEqual(final["schema_version"], 3)
         self.assertEqual(final["findings"], [])
         self.assertEqual(final["rejected_findings"], [])
         self.assertEqual(final["unresolved_findings"], [])
+        self.assertEqual(final["review_records"], [])
         self.assertEqual(final["trace"]["canonical_candidates"], 0)
+
+    def test_manifestation_requires_at_least_one_concrete_step(self) -> None:
+        self.command("init")
+        packet_path, packet = self.one_packet("adversarial")
+        self.command("scaffold-artifact", str(packet_path))
+        artifact_path = Path(packet["output_path"])
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        candidate = self.finding("reviewer-01:C01")
+        candidate["manifestation"]["steps"] = []
+        artifact["coverage"] = {
+            "inspected_paths": ["sample.py"],
+            "checks_run": ["synthetic source inspection"],
+            "gaps": [],
+        }
+        artifact["candidates"] = [candidate]
+        write_json(artifact_path, artifact)
+
+        failure = self.run_argv(packet["validation_command"], expected_code=2)
+        self.assertIn("$.candidates[0].manifestation.steps", failure.stdout)
+
+    def test_verified_reproduction_requires_execution_evidence_and_rejects_placeholders(self) -> None:
+        self.command("init")
+        packet_path, packet = self.one_packet("adversarial")
+        self.command("scaffold-artifact", str(packet_path))
+        artifact_path = Path(packet["output_path"])
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        artifact["coverage"] = {
+            "inspected_paths": ["sample.py"],
+            "checks_run": ["synthetic source inspection"],
+            "gaps": [],
+        }
+        candidate = self.finding("reviewer-01:C01")
+        candidate["manifestation"]["kind"] = "verified_reproduction"
+        artifact["candidates"] = [candidate]
+        write_json(artifact_path, artifact)
+
+        missing_evidence = self.run_argv(packet["validation_command"], expected_code=2)
+        self.assertIn("verified_reproduction_requires_execution_evidence",
+                      missing_evidence.stdout)
+
+        candidate["evidence"].append({
+            "kind": "command",
+            "location": None,
+            "statement": "The reproduction command produced the described failure.",
+            "status": "verified",
+        })
+        write_json(artifact_path, artifact)
+        self.run_argv(packet["validation_command"])
+
+        candidate["manifestation"]["kind"] = "reasoned_scenario"
+        candidate["manifestation"]["setup"] = "The issue occurs."
+        write_json(artifact_path, artifact)
+        placeholder = self.run_argv(packet["validation_command"], expected_code=2)
+        self.assertIn("non_concrete_manifestation", placeholder.stdout)
+
+        candidate["manifestation"]["setup"] = "Ｔｈｅ ｉｓｓｕｅ ｏｃｃｕｒｓ。"
+        write_json(artifact_path, artifact)
+        fullwidth_placeholder = self.run_argv(packet["validation_command"], expected_code=2)
+        self.assertIn("non_concrete_manifestation", fullwidth_placeholder.stdout)
 
     def test_rejected_candidate_is_preserved_with_reason(self) -> None:
         self.command("init")
@@ -171,7 +240,7 @@ class PipelineCase(unittest.TestCase):
         dedup_path = Path(dedup_packet["output_path"])
         canonical = self.finding("F001")
         write_json(dedup_path, {
-            "schema_version": 2,
+            "schema_version": 3,
             "stage": "dedup",
             "task_id": dedup_packet["task_id"],
             "attempt": dedup_packet["attempt"],
@@ -188,7 +257,7 @@ class PipelineCase(unittest.TestCase):
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
         refutation_path = Path(refutation_packet["output_path"])
         write_json(refutation_path, {
-            "schema_version": 2,
+            "schema_version": 3,
             "stage": "refutation",
             "task_id": refutation_packet["task_id"],
             "attempt": refutation_packet["attempt"],
@@ -210,7 +279,7 @@ class PipelineCase(unittest.TestCase):
         judgment_path = Path(judgment_packet["output_path"])
         reason = "Direct inspection confirms that the claimed call path is unreachable."
         write_json(judgment_path, {
-            "schema_version": 2,
+            "schema_version": 3,
             "stage": "judgment",
             "task_id": judgment_packet["task_id"],
             "attempt": judgment_packet["attempt"],
@@ -234,10 +303,202 @@ class PipelineCase(unittest.TestCase):
         self.assertEqual(len(final["rejected_findings"]), 1)
         rejected = final["rejected_findings"][0]
         self.assertEqual(rejected["finding"]["id"], "F001")
+        self.assertEqual(rejected["finding"]["manifestation"]["kind"], "reasoned_scenario")
+        self.assertEqual(len(rejected["finding"]["manifestation"]["steps"]), 2)
         self.assertEqual(rejected["refutation_verdict"], "refute")
         self.assertEqual(rejected["reason"], reason)
         self.assertEqual(final["trace"]["rejected_findings"], 1)
         self.assertEqual(final["unresolved_findings"], [])
+        review_record = final["review_records"][0]
+        self.assertEqual(review_record["case_for"]["id"], "F001")
+        self.assertEqual(review_record["challenge"]["verdict"], "refute")
+        self.assertEqual(review_record["final_judgment"]["source"], "judgment")
+        self.assertEqual(review_record["final_judgment"]["basis"], [reason])
+        self.assertEqual(review_record["presented_finding"], rejected["finding"])
+
+    def test_upheld_candidate_preserves_challenge_and_refutation_basis(self) -> None:
+        self.command("init")
+        raw = self.finding("reviewer-01:C01")
+        _, adversarial_path = self.write_adversarial([raw])
+        self.command("seal-adversarial", str(adversarial_path))
+
+        dedup_packet_path, dedup_packet = self.one_packet("dedup")
+        dedup_path = Path(dedup_packet["output_path"])
+        canonical = self.finding("F001")
+        write_json(dedup_path, {
+            "schema_version": 3,
+            "stage": "dedup",
+            "task_id": dedup_packet["task_id"],
+            "attempt": dedup_packet["attempt"],
+            "agent_id": dedup_packet["agent_id"],
+            "canonical_candidates": [{
+                "finding": canonical,
+                "source_candidate_ids": ["reviewer-01:C01"],
+                "merge_basis": "The only raw candidate maps directly to this finding.",
+            }],
+        })
+        self.command("validate-artifact", str(dedup_packet_path), str(dedup_path))
+        self.command("accept-dedup", "--workers", "1", str(dedup_path))
+
+        refutation_packet_path, refutation_packet = self.one_packet("refutation")
+        refutation_path = Path(refutation_packet["output_path"])
+        correctness = "The source path and state transition make the failure reachable."
+        proportionality = "The persistent loss justifies the focused remediation."
+        write_json(refutation_path, {
+            "schema_version": 3,
+            "stage": "refutation",
+            "task_id": refutation_packet["task_id"],
+            "attempt": refutation_packet["attempt"],
+            "agent_id": refutation_packet["agent_id"],
+            "results": [{
+                "candidate_id": "F001",
+                "verdict": "uphold",
+                "correctness_analysis": correctness,
+                "proportionality_analysis": proportionality,
+                "evidence": [{
+                    "kind": "source",
+                    "location": {"path": "sample.py", "start_line": 2, "end_line": 4},
+                    "statement": "The source retains the reachable mutation path.",
+                    "status": "verified",
+                }],
+                "replacement_finding": None,
+                "residual_uncertainty": "",
+            }],
+        })
+        self.command("validate-artifact", str(refutation_packet_path), str(refutation_path))
+        self.command("accept-refutation", "--workers", "1", str(refutation_path))
+        self.command("finalize")
+        self.command("validate-final")
+
+        final = json.loads((self.run_root / "final" / "final.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(final["findings"]), 1)
+        record = final["review_records"][0]
+        self.assertEqual(record["case_for"], canonical)
+        self.assertEqual(record["challenge"]["verdict"], "uphold")
+        self.assertEqual(record["final_judgment"]["source"], "refutation")
+        self.assertEqual(record["final_judgment"]["basis"], [correctness, proportionality])
+        self.assertEqual(record["presented_finding"], canonical)
+
+        final["review_records"][0]["final_judgment"]["basis"] = [
+            "An unrelated basis that does not preserve the challenge analysis."
+        ]
+        final_path = self.run_root / "final" / "final.json"
+        write_json(final_path, final)
+        mismatch = self.command("validate-final", expected_code=2)
+        self.assertIn("refutation_judgment_mismatch", mismatch.stdout)
+
+    def test_judgment_uphold_and_modify_preserve_final_basis_and_selected_finding(self) -> None:
+        self.command("init")
+        raw_one = self.finding("reviewer-01:C01")
+        raw_two = self.finding("reviewer-01:C02")
+        _, adversarial_path = self.write_adversarial([raw_one, raw_two])
+        self.command("seal-adversarial", str(adversarial_path))
+
+        dedup_packet_path, dedup_packet = self.one_packet("dedup")
+        dedup_path = Path(dedup_packet["output_path"])
+        canonical_one = self.finding("F001")
+        canonical_two = self.finding("F002")
+        write_json(dedup_path, {
+            "schema_version": 3,
+            "stage": "dedup",
+            "task_id": dedup_packet["task_id"],
+            "attempt": dedup_packet["attempt"],
+            "agent_id": dedup_packet["agent_id"],
+            "canonical_candidates": [
+                {
+                    "finding": canonical_one,
+                    "source_candidate_ids": ["reviewer-01:C01"],
+                    "merge_basis": "The first raw candidate remains independent.",
+                },
+                {
+                    "finding": canonical_two,
+                    "source_candidate_ids": ["reviewer-01:C02"],
+                    "merge_basis": "The second raw candidate remains independent.",
+                },
+            ],
+        })
+        self.command("validate-artifact", str(dedup_packet_path), str(dedup_path))
+        self.command("accept-dedup", "--workers", "1", str(dedup_path))
+
+        refutation_packet_path, refutation_packet = self.one_packet("refutation")
+        refutation_path = Path(refutation_packet["output_path"])
+        write_json(refutation_path, {
+            "schema_version": 3,
+            "stage": "refutation",
+            "task_id": refutation_packet["task_id"],
+            "attempt": refutation_packet["attempt"],
+            "agent_id": refutation_packet["agent_id"],
+            "results": [
+                {
+                    "candidate_id": "F001",
+                    "verdict": "refute",
+                    "correctness_analysis": "The first call path initially appears unreachable.",
+                    "proportionality_analysis": "No change would be justified if it were unreachable.",
+                    "evidence": [],
+                    "replacement_finding": None,
+                    "residual_uncertainty": "",
+                },
+                {
+                    "candidate_id": "F002",
+                    "verdict": "refute",
+                    "correctness_analysis": "The second manifestation overstates the observed failure.",
+                    "proportionality_analysis": "The remedy should match the corrected impact.",
+                    "evidence": [],
+                    "replacement_finding": None,
+                    "residual_uncertainty": "",
+                },
+            ],
+        })
+        self.command("validate-artifact", str(refutation_packet_path), str(refutation_path))
+        self.command("accept-refutation", "--workers", "1", str(refutation_path))
+
+        judgment_packet_path, judgment_packet = self.one_packet("judgment")
+        judgment_path = Path(judgment_packet["output_path"])
+        modified = self.finding("F002")
+        modified["title"] = "Synthetic persistent state can become stale"
+        modified["manifestation"]["failure"] = (
+            "The reloaded record still shows value 100 after the source has changed to 125."
+        )
+        uphold_basis = "Caller inspection confirms that the first call path is reachable."
+        modify_basis = "The second issue survives with a corrected stale-value manifestation."
+        write_json(judgment_path, {
+            "schema_version": 3,
+            "stage": "judgment",
+            "task_id": judgment_packet["task_id"],
+            "attempt": judgment_packet["attempt"],
+            "agent_id": judgment_packet["agent_id"],
+            "results": [
+                {
+                    "candidate_id": "F001",
+                    "verdict": "uphold",
+                    "resolved_points": [uphold_basis],
+                    "evidence": [],
+                    "final_finding": None,
+                    "residual_risk": "",
+                },
+                {
+                    "candidate_id": "F002",
+                    "verdict": "modify",
+                    "resolved_points": [modify_basis],
+                    "evidence": [],
+                    "final_finding": modified,
+                    "residual_risk": "",
+                },
+            ],
+        })
+        self.command("validate-artifact", str(judgment_packet_path), str(judgment_path))
+        self.command("accept-judgment", str(judgment_path))
+        self.command("finalize")
+        self.command("validate-final")
+
+        final = json.loads((self.run_root / "final" / "final.json").read_text(encoding="utf-8"))
+        records = {record["candidate_id"]: record for record in final["review_records"]}
+        self.assertEqual(records["F001"]["final_judgment"]["verdict"], "uphold")
+        self.assertEqual(records["F001"]["final_judgment"]["basis"], [uphold_basis])
+        self.assertEqual(records["F001"]["presented_finding"], canonical_one)
+        self.assertEqual(records["F002"]["final_judgment"]["verdict"], "modify")
+        self.assertEqual(records["F002"]["final_judgment"]["basis"], [modify_basis])
+        self.assertEqual(records["F002"]["presented_finding"], modified)
 
     def test_unresolved_candidate_is_structured_and_requires_nonempty_risk(self) -> None:
         self.command("init")
@@ -248,7 +509,7 @@ class PipelineCase(unittest.TestCase):
         dedup_packet_path, dedup_packet = self.one_packet("dedup")
         dedup_path = Path(dedup_packet["output_path"])
         write_json(dedup_path, {
-            "schema_version": 2,
+            "schema_version": 3,
             "stage": "dedup",
             "task_id": dedup_packet["task_id"],
             "attempt": dedup_packet["attempt"],
@@ -264,19 +525,26 @@ class PipelineCase(unittest.TestCase):
 
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
         refutation_path = Path(refutation_packet["output_path"])
+        replacement = self.finding("F001")
+        replacement["manifestation"]["setup"] = (
+            "Production configuration enables the path, but no execution trace is available."
+        )
+        replacement["manifestation"]["failure"] = (
+            "If the path executes, reloading the record may omit the stored value 100."
+        )
         write_json(refutation_path, {
-            "schema_version": 2,
+            "schema_version": 3,
             "stage": "refutation",
             "task_id": refutation_packet["task_id"],
             "attempt": refutation_packet["attempt"],
             "agent_id": refutation_packet["agent_id"],
             "results": [{
                 "candidate_id": "F001",
-                "verdict": "unresolved",
+                "verdict": "modify",
                 "correctness_analysis": "The fixture cannot establish production reachability.",
                 "proportionality_analysis": "A human decision is needed before remediation.",
                 "evidence": [],
-                "replacement_finding": None,
+                "replacement_finding": replacement,
                 "residual_uncertainty": "Production configuration is unavailable.",
             }],
         })
@@ -286,7 +554,7 @@ class PipelineCase(unittest.TestCase):
         judgment_packet_path, judgment_packet = self.one_packet("judgment")
         judgment_path = Path(judgment_packet["output_path"])
         judgment = {
-            "schema_version": 2,
+            "schema_version": 3,
             "stage": "judgment",
             "task_id": judgment_packet["task_id"],
             "attempt": judgment_packet["attempt"],
@@ -318,9 +586,19 @@ class PipelineCase(unittest.TestCase):
         self.assertEqual(len(final["unresolved_findings"]), 1)
         unresolved = final["unresolved_findings"][0]
         self.assertEqual(unresolved["finding"]["id"], "F001")
-        self.assertEqual(unresolved["refutation_verdict"], "unresolved")
+        self.assertEqual(unresolved["finding"]["manifestation"]["failure"],
+                         "If the path executes, reloading the record may omit the stored value 100.")
+        self.assertEqual(unresolved["refutation_verdict"], "modify")
         self.assertEqual(unresolved["residual_risk"], residual_risk)
         self.assertEqual(final["trace"]["unresolved"], 1)
+        review_record = final["review_records"][0]
+        self.assertEqual(review_record["challenge"]["verdict"], "modify")
+        self.assertEqual(
+            review_record["challenge"]["proposed_finding"]["manifestation"]["failure"],
+            "If the path executes, reloading the record may omit the stored value 100.",
+        )
+        self.assertEqual(review_record["final_judgment"]["verdict"], "unresolved")
+        self.assertEqual(review_record["presented_finding"], unresolved["finding"])
 
     def test_invalid_agent_id_is_rejected_during_init(self) -> None:
         lenses = json.loads((self.run_root / "lenses.json").read_text(encoding="utf-8"))
@@ -379,6 +657,29 @@ class PipelineCase(unittest.TestCase):
         final["findings"][0]["location"] = {
             "path": "sample.py", "start_line": 200, "end_line": 201,
         }
+        final["review_records"] = [{
+            "candidate_id": "F999",
+            "case_for": final["findings"][0],
+            "challenge": {
+                "verdict": "uphold",
+                "correctness_analysis": "The synthetic path remains reachable.",
+                "proportionality_analysis": "The persistent impact merits remediation.",
+                "evidence": [],
+                "proposed_finding": None,
+                "residual_uncertainty": "",
+            },
+            "final_judgment": {
+                "source": "refutation",
+                "verdict": "uphold",
+                "basis": [
+                    "The synthetic path remains reachable.",
+                    "The persistent impact merits remediation.",
+                ],
+                "evidence": [],
+                "residual_risk": "",
+            },
+            "presented_finding": final["findings"][0],
+        }]
         final["trace"]["canonical_candidates"] = 1
         final["trace"]["raw_candidates"] = 1
         final["trace"]["refutation_results"] = 1

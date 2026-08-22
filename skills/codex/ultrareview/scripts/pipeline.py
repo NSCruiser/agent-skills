@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Coordinate one isolated Ultrareview run using the fixed version 2 protocol."""
+"""Coordinate one isolated Ultrareview run using the fixed version 3 protocol."""
 
 from __future__ import annotations
 
@@ -7,12 +7,13 @@ import json
 import os
 import re
 import sys
+import unicodedata
 import uuid
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 SCOPE_PATH = ROOT / "scope.json"
 LENSES_PATH = ROOT / "lenses.json"
 SCHEMA_PATH = ROOT / "pipeline-schemas.json"
@@ -24,6 +25,17 @@ AGENT_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 PRIORITIES = {"P0", "P1", "P2", "P3"}
 CONFIDENCES = {"high", "medium", "low"}
 EVIDENCE_KINDS = {"source", "test", "caller", "history", "command", "contract"}
+MANIFESTATION_PLACEHOLDERS = {
+    "an error occurs",
+    "it fails",
+    "n/a",
+    "same as impact",
+    "same as trigger",
+    "tbd",
+    "the failure occurs",
+    "the issue occurs",
+    "todo",
+}
 
 
 class ValidationError(Exception):
@@ -139,9 +151,35 @@ def validate_evidence(value: object, stage: str, task_id: str, field: str) -> No
         validate_location(value["location"], stage, task_id, f"{field}.location")
 
 
+def normalized_manifestation_text(value: str) -> str:
+    compatible = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"[\W_]+", " ", compatible, flags=re.UNICODE).strip()
+
+
+def validate_manifestation(value: object, stage: str, task_id: str, field: str) -> None:
+    mapping = exact_keys(value, {"kind", "setup", "steps", "failure"},
+                         stage, task_id, field)
+    require(mapping["kind"] in {"verified_reproduction", "reasoned_scenario"},
+            stage, task_id, "invalid_enum", f"{field}.kind")
+    setup = nonempty_string(mapping["setup"], stage, task_id, f"{field}.setup")
+    normalized_setup = normalized_manifestation_text(setup)
+    require(normalized_setup not in MANIFESTATION_PLACEHOLDERS and bool(normalized_setup),
+            stage, task_id, "non_concrete_manifestation", f"{field}.setup")
+    steps = string_list(mapping["steps"], stage, task_id, f"{field}.steps", nonempty=True)
+    require(bool(steps), stage, task_id, "invalid_array", f"{field}.steps")
+    for index, step in enumerate(steps):
+        normalized_step = normalized_manifestation_text(step)
+        require(normalized_step not in MANIFESTATION_PLACEHOLDERS and bool(normalized_step),
+                stage, task_id, "non_concrete_manifestation", f"{field}.steps[{index}]")
+    failure = nonempty_string(mapping["failure"], stage, task_id, f"{field}.failure")
+    normalized_failure = normalized_manifestation_text(failure)
+    require(normalized_failure not in MANIFESTATION_PLACEHOLDERS and bool(normalized_failure),
+            stage, task_id, "non_concrete_manifestation", f"{field}.failure")
+
+
 def validate_finding(value: object, stage: str, task_id: str, field: str, *, raw: bool) -> None:
     keys = {"id", "priority", "title", "location", "context", "trigger", "impact",
-            "evidence", "recommendation", "confidence"}
+            "manifestation", "evidence", "recommendation", "confidence"}
     mapping = exact_keys(value, keys, stage, task_id, field)
     finding_id = nonempty_string(mapping["id"], stage, task_id, f"{field}.id")
     pattern = RAW_ID if raw else CANONICAL_ID
@@ -150,10 +188,20 @@ def validate_finding(value: object, stage: str, task_id: str, field: str, *, raw
     for key in ("title", "context", "trigger", "impact", "recommendation"):
         nonempty_string(mapping[key], stage, task_id, f"{field}.{key}")
     validate_location(mapping["location"], stage, task_id, f"{field}.location")
+    validate_manifestation(mapping["manifestation"], stage, task_id,
+                           f"{field}.manifestation")
     require(isinstance(mapping["evidence"], list) and len(mapping["evidence"]) >= 1,
             stage, task_id, "invalid_array", f"{field}.evidence")
     for index, evidence in enumerate(mapping["evidence"]):
         validate_evidence(evidence, stage, task_id, f"{field}.evidence[{index}]")
+    if mapping["manifestation"]["kind"] == "verified_reproduction":
+        has_verified_execution = any(
+            evidence["kind"] in {"test", "command"} and evidence["status"] == "verified"
+            for evidence in mapping["evidence"]
+        )
+        require(has_verified_execution, stage, task_id,
+                "verified_reproduction_requires_execution_evidence",
+                f"{field}.manifestation.kind")
     require(mapping["confidence"] in CONFIDENCES, stage, task_id,
             "invalid_enum", f"{field}.confidence")
 
@@ -535,6 +583,80 @@ def validate_judgment(packet: dict, value: object) -> None:
             "assignment_coverage", "$.results[*].candidate_id")
 
 
+def validate_challenge_record(value: object, candidate_id: str,
+                              stage: str, task_id: str, field: str) -> dict:
+    row = exact_keys(
+        value,
+        {
+            "verdict", "correctness_analysis", "proportionality_analysis",
+            "evidence", "proposed_finding", "residual_uncertainty",
+        },
+        stage,
+        task_id,
+        field,
+    )
+    require(row["verdict"] in {"uphold", "modify", "refute", "unresolved"},
+            stage, task_id, "invalid_enum", f"{field}.verdict")
+    nonempty_string(row["correctness_analysis"], stage, task_id,
+                    f"{field}.correctness_analysis")
+    nonempty_string(row["proportionality_analysis"], stage, task_id,
+                    f"{field}.proportionality_analysis")
+    require(isinstance(row["evidence"], list), stage, task_id,
+            "invalid_type", f"{field}.evidence")
+    for index, evidence in enumerate(row["evidence"]):
+        validate_evidence(evidence, stage, task_id, f"{field}.evidence[{index}]")
+    require(isinstance(row["residual_uncertainty"], str), stage, task_id,
+            "invalid_string", f"{field}.residual_uncertainty")
+    if row["verdict"] == "modify":
+        validate_finding(row["proposed_finding"], stage, task_id,
+                         f"{field}.proposed_finding", raw=False)
+        require(row["proposed_finding"]["id"] == candidate_id, stage, task_id,
+                "replacement_id_mismatch", f"{field}.proposed_finding.id")
+    else:
+        require(row["proposed_finding"] is None, stage, task_id,
+                "unexpected_replacement", f"{field}.proposed_finding")
+    return row
+
+
+def validate_final_judgment_record(value: object, challenge: dict,
+                                   stage: str, task_id: str, field: str) -> dict:
+    row = exact_keys(value, {"source", "verdict", "basis", "evidence", "residual_risk"},
+                     stage, task_id, field)
+    require(row["source"] in {"refutation", "judgment"}, stage, task_id,
+            "invalid_enum", f"{field}.source")
+    require(row["verdict"] in {"uphold", "modify", "reject", "unresolved"},
+            stage, task_id, "invalid_enum", f"{field}.verdict")
+    basis = string_list(row["basis"], stage, task_id, f"{field}.basis", nonempty=True)
+    require(bool(basis), stage, task_id, "invalid_array", f"{field}.basis")
+    require(isinstance(row["evidence"], list), stage, task_id,
+            "invalid_type", f"{field}.evidence")
+    for index, evidence in enumerate(row["evidence"]):
+        validate_evidence(evidence, stage, task_id, f"{field}.evidence[{index}]")
+    require(isinstance(row["residual_risk"], str), stage, task_id,
+            "invalid_string", f"{field}.residual_risk")
+    if row["verdict"] == "unresolved":
+        nonempty_string(row["residual_risk"], stage, task_id, f"{field}.residual_risk")
+    if row["source"] == "refutation":
+        require(challenge["verdict"] == "uphold" and row["verdict"] == "uphold",
+                stage, task_id, "invalid_judgment_source", field)
+        require(
+            row["basis"] == [
+                challenge["correctness_analysis"],
+                challenge["proportionality_analysis"],
+            ]
+            and row["evidence"] == challenge["evidence"]
+            and row["residual_risk"] == challenge["residual_uncertainty"],
+            stage,
+            task_id,
+            "refutation_judgment_mismatch",
+            field,
+        )
+    else:
+        require(challenge["verdict"] != "uphold", stage, task_id,
+                "invalid_judgment_source", field)
+    return row
+
+
 def validate_final_payload(value: object, expected_scope: dict) -> None:
     stage = "finalize"
     task_id = "final"
@@ -542,7 +664,7 @@ def validate_final_payload(value: object, expected_scope: dict) -> None:
         value,
         {
             "schema_version", "scope", "findings", "rejected_findings",
-            "unresolved_findings", "coverage", "trace",
+            "unresolved_findings", "review_records", "coverage", "trace",
         },
         stage,
         task_id,
@@ -649,6 +771,59 @@ def validate_final_payload(value: object, expected_scope: dict) -> None:
     require(unresolved_findings == expected_unresolved_order, stage, task_id,
             "findings_not_sorted", "$.unresolved_findings")
 
+    presented_by_id = {finding["id"]: finding for finding in findings}
+    presented_by_id.update({row["finding"]["id"]: row["finding"] for row in rejected_findings})
+    presented_by_id.update({row["finding"]["id"]: row["finding"] for row in unresolved_findings})
+    review_records = mapping["review_records"]
+    require(isinstance(review_records, list), stage, task_id,
+            "invalid_type", "$.review_records")
+    review_ids: list[str] = []
+    for index, record in enumerate(review_records):
+        field = f"$.review_records[{index}]"
+        row = exact_keys(
+            record,
+            {"candidate_id", "case_for", "challenge", "final_judgment", "presented_finding"},
+            stage,
+            task_id,
+            field,
+        )
+        candidate_id = nonempty_string(row["candidate_id"], stage, task_id,
+                                       f"{field}.candidate_id")
+        require(bool(CANONICAL_ID.fullmatch(candidate_id)), stage, task_id,
+                "invalid_id", f"{field}.candidate_id")
+        review_ids.append(candidate_id)
+        validate_finding(row["case_for"], stage, task_id, f"{field}.case_for", raw=False)
+        require(row["case_for"]["id"] == candidate_id, stage, task_id,
+                "review_record_id_mismatch", f"{field}.case_for.id")
+        challenge = validate_challenge_record(
+            row["challenge"], candidate_id, stage, task_id, f"{field}.challenge"
+        )
+        final_judgment = validate_final_judgment_record(
+            row["final_judgment"], challenge,
+            stage, task_id, f"{field}.final_judgment",
+        )
+        validate_finding(row["presented_finding"], stage, task_id,
+                         f"{field}.presented_finding", raw=False)
+        require(row["presented_finding"]["id"] == candidate_id, stage, task_id,
+                "review_record_id_mismatch", f"{field}.presented_finding.id")
+        require(candidate_id in presented_by_id, stage, task_id,
+                "missing_final_disposition", f"{field}.candidate_id")
+        require(row["presented_finding"] == presented_by_id[candidate_id], stage, task_id,
+                "presented_finding_mismatch", f"{field}.presented_finding")
+        expected_verdicts = (
+            {"uphold", "modify"} if candidate_id in finding_ids
+            else {"reject"} if candidate_id in rejected_ids
+            else {"unresolved"}
+        )
+        require(final_judgment["verdict"] in expected_verdicts, stage, task_id,
+                "final_disposition_mismatch", f"{field}.final_judgment.verdict")
+    require(len(review_ids) == len(set(review_ids)), stage, task_id,
+            "duplicate_canonical_id", "$.review_records")
+    require(set(review_ids) == set(presented_by_id), stage, task_id,
+            "incomplete_review_record_coverage", "$.review_records")
+    require(review_records == sorted(review_records, key=lambda item: item["candidate_id"]),
+            stage, task_id, "review_records_not_sorted", "$.review_records")
+
     coverage = exact_keys(mapping["coverage"], {"review_lanes", "checks_run", "gaps"},
                           stage, task_id, "$.coverage")
     for key in ("review_lanes", "checks_run", "gaps"):
@@ -669,6 +844,8 @@ def validate_final_payload(value: object, expected_scope: dict) -> None:
             "trace_invariant", "$.trace.rejected_findings")
     require(trace["unresolved"] == len(unresolved_findings), stage, task_id,
             "trace_invariant", "$.trace.unresolved")
+    require(trace["canonical_candidates"] == len(review_records), stage, task_id,
+            "trace_invariant", "$.trace.canonical_candidates")
     require(
         trace["canonical_candidates"]
         == trace["final_findings"] + trace["rejected_findings"] + trace["unresolved"],
@@ -968,6 +1145,7 @@ def command_finalize() -> None:
     findings: list[dict] = []
     rejected_findings: list[dict] = []
     unresolved_findings: list[dict] = []
+    review_records: list[dict] = []
     rejected = 0
     unresolved = 0
     canonical_count = len(state.get("canonical_ids", []))
@@ -989,32 +1167,75 @@ def command_finalize() -> None:
         refutation_count = len(refutations)
         judgment_count = len(judgments)
         for candidate_id in state["canonical_ids"]:
+            case_for = canonical[candidate_id]
             refutation = refutations[candidate_id]
+            challenge = {
+                "verdict": refutation["verdict"],
+                "correctness_analysis": refutation["correctness_analysis"],
+                "proportionality_analysis": refutation["proportionality_analysis"],
+                "evidence": refutation["evidence"],
+                "proposed_finding": refutation["replacement_finding"],
+                "residual_uncertainty": refutation["residual_uncertainty"],
+            }
             if refutation["verdict"] == "uphold":
-                findings.append(canonical[candidate_id])
-                continue
-            judgment = judgments[candidate_id]
-            if judgment["verdict"] == "uphold":
-                findings.append(canonical[candidate_id])
-            elif judgment["verdict"] == "modify":
-                findings.append(judgment["final_finding"])
-            elif judgment["verdict"] == "reject":
-                rejected += 1
-                rejected_findings.append({
-                    "finding": canonical[candidate_id],
-                    "refutation_verdict": refutation["verdict"],
-                    "judgment_verdict": "reject",
-                    "reason": " ".join(judgment["resolved_points"]),
-                })
+                presented_finding = case_for
+                findings.append(presented_finding)
+                final_judgment = {
+                    "source": "refutation",
+                    "verdict": "uphold",
+                    "basis": [
+                        refutation["correctness_analysis"],
+                        refutation["proportionality_analysis"],
+                    ],
+                    "evidence": refutation["evidence"],
+                    "residual_risk": refutation["residual_uncertainty"],
+                }
             else:
-                unresolved += 1
-                unresolved_findings.append({
-                    "finding": canonical[candidate_id],
-                    "refutation_verdict": refutation["verdict"],
-                    "judgment_verdict": "unresolved",
-                    "resolved_points": judgment["resolved_points"],
+                disputed_finding = (
+                    refutation["replacement_finding"]
+                    if refutation["verdict"] == "modify"
+                    else case_for
+                )
+                judgment = judgments[candidate_id]
+                if judgment["verdict"] == "uphold":
+                    presented_finding = case_for
+                    findings.append(presented_finding)
+                elif judgment["verdict"] == "modify":
+                    presented_finding = judgment["final_finding"]
+                    findings.append(presented_finding)
+                elif judgment["verdict"] == "reject":
+                    presented_finding = disputed_finding
+                    rejected += 1
+                    rejected_findings.append({
+                        "finding": presented_finding,
+                        "refutation_verdict": refutation["verdict"],
+                        "judgment_verdict": "reject",
+                        "reason": " ".join(judgment["resolved_points"]),
+                    })
+                else:
+                    presented_finding = disputed_finding
+                    unresolved += 1
+                    unresolved_findings.append({
+                        "finding": presented_finding,
+                        "refutation_verdict": refutation["verdict"],
+                        "judgment_verdict": "unresolved",
+                        "resolved_points": judgment["resolved_points"],
+                        "residual_risk": judgment["residual_risk"],
+                    })
+                final_judgment = {
+                    "source": "judgment",
+                    "verdict": judgment["verdict"],
+                    "basis": judgment["resolved_points"],
+                    "evidence": judgment["evidence"],
                     "residual_risk": judgment["residual_risk"],
-                })
+                }
+            review_records.append({
+                "candidate_id": candidate_id,
+                "case_for": case_for,
+                "challenge": challenge,
+                "final_judgment": final_judgment,
+                "presented_finding": presented_finding,
+            })
     priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
     findings.sort(key=lambda item: (priority_order[item["priority"]], item["id"]))
     rejected_findings.sort(
@@ -1029,6 +1250,7 @@ def command_finalize() -> None:
             item["finding"]["id"],
         )
     )
+    review_records.sort(key=lambda item: item["candidate_id"])
     trace = {
         "reviewers_completed": len(state["accepted"].get("adversarial", [])),
         "raw_candidates": len(state.get("raw_ids", [])),
@@ -1047,6 +1269,7 @@ def command_finalize() -> None:
         "findings": findings,
         "rejected_findings": rejected_findings,
         "unresolved_findings": unresolved_findings,
+        "review_records": review_records,
         "coverage": aggregate_coverage(state),
         "trace": trace,
     }
@@ -1131,6 +1354,14 @@ def command_validate_final() -> None:
     ] + [
         (f"$.unresolved_findings[{index}].finding.location", unresolved_finding["finding"])
         for index, unresolved_finding in enumerate(final["unresolved_findings"])
+    ] + [
+        (f"$.review_records[{index}].case_for.location", record["case_for"])
+        for index, record in enumerate(final["review_records"])
+    ] + [
+        (f"$.review_records[{index}].challenge.proposed_finding.location",
+         record["challenge"]["proposed_finding"])
+        for index, record in enumerate(final["review_records"])
+        if record["challenge"]["proposed_finding"] is not None
     ]
     for field, finding in located_findings:
         path = source_path(final["scope"], finding["location"], field)
@@ -1141,7 +1372,8 @@ def command_validate_final() -> None:
     print(
         f"FINAL_VALID {final_path} findings={len(final['findings'])} "
         f"rejected={len(final['rejected_findings'])} "
-        f"unresolved={len(final['unresolved_findings'])}"
+        f"unresolved={len(final['unresolved_findings'])} "
+        f"review_records={len(final['review_records'])}"
     )
 
 

@@ -41,7 +41,9 @@ The bootstrap script copies the packaged coordinator, fixed Schema, and stage in
 
 ## Fixed schemas
 
-[pipeline-schemas.json](pipeline-schemas.json) defines the exact version 2 contracts for `scope.json`, `lenses.json`, task packets, all four stage artifacts, and `final.json`. Do not change these contracts for a particular review.
+[pipeline-schemas.json](pipeline-schemas.json) defines the exact version 3 contracts for `scope.json`, `lenses.json`, task packets, all four stage artifacts, and `final.json`. Do not change these contracts for a particular review.
+
+Every raw, canonical, replacement, final, rejected, or unresolved finding carries the same required `manifestation` object. It distinguishes an actually verified reproduction from a reasoned scenario and records a concrete setup, ordered steps, and exact observable failure. Generic restatements of `trigger` or `impact` do not satisfy this contract.
 
 The coordinator must check required fields, allowed values, unknown fields, unique IDs, source mappings, and line ranges. It may use an installed JSON Schema validator. Otherwise, implement the needed checks directly with the Python standard library. Do not install a dependency for a review run.
 
@@ -56,6 +58,8 @@ JSON Schema cannot express every relationship between records. The coordinator m
 7. Each refutation and judgment assignment is covered exactly once.
 8. Every artifact's task ID and attempt match the packet that assigned its output path.
 9. Every location has `end_line` greater than or equal to `start_line`.
+10. Every finding has at least one non-empty manifestation step and a non-empty setup and failure result.
+11. A `verified_reproduction` has at least one verified `test` or `command` evidence record; vague placeholders are rejected.
 
 The coordinator prints only status, counts, task IDs, packet paths, output paths, reason codes, and invalid field paths. It never prints findings, evidence, recommendations, raw JSON, or packet contents.
 
@@ -78,10 +82,10 @@ Every packet must tell the agent to read `scope.json` first, then read and follo
 
 Use these stage instructions:
 
-1. An adversarial packet names the assigned lane and requires direct inspection, complete coverage of that lane, and an empty candidate list when no issue qualifies.
-2. A dedup packet requires complete raw ID coverage, merging only true duplicates, and no decision on validity.
-3. A refutation packet requires direct inspection plus correctness and proportionality analysis for every assigned canonical ID.
-4. A judgment packet requires direct inspection and one binding disposition for every assigned disputed ID.
+1. An adversarial packet names the assigned lane and requires direct inspection, complete coverage of that lane, a concrete manifestation for every candidate, and an empty candidate list when no issue qualifies.
+2. A dedup packet requires complete raw ID coverage, merging only true duplicates, preserving the clearest accurate manifestation, and no decision on validity.
+3. A refutation packet requires direct inspection plus correctness, manifestation reachability, and proportionality analysis for every assigned canonical ID.
+4. A judgment packet requires direct inspection and one binding disposition for every assigned disputed ID, including correction of an inaccurate manifestation when modifying a finding.
 
 ## Coordinator commands
 
@@ -111,8 +115,9 @@ Use these routing rules:
 2. A result of `modify`, `refute`, or `unresolved` goes to judgment.
 3. A judgment of `uphold` keeps the canonical finding.
 4. A judgment of `modify` uses the complete corrected finding.
-5. A judgment of `reject` omits the finding from the upheld list and records the canonical finding, Stage 3 verdict, and Stage 4 reason in `rejected_findings`.
-6. A judgment of `unresolved` omits the finding from the upheld list and records the canonical finding, Stage 3 verdict, resolved points, and non-empty residual risk in `unresolved_findings`.
+5. A judgment of `reject` omits the finding from the upheld list and records the Stage 3 replacement finding when its verdict was `modify`, otherwise the canonical finding, plus the Stage 3 verdict and Stage 4 reason in `rejected_findings`.
+6. A judgment of `unresolved` omits the finding from the upheld list and records the Stage 3 replacement finding when its verdict was `modify`, otherwise the canonical finding, plus the Stage 3 verdict, resolved points, and non-empty residual risk in `unresolved_findings`.
+7. Every canonical candidate produces exactly one `review_records` entry. A Stage 3 `uphold` uses refutation as the final judgment source; every disputed candidate uses Stage 4 judgment. The record preserves both sides even when the final disposition rejects the finding.
 
 ## Agent messages
 
@@ -158,7 +163,7 @@ The main agent may give those field paths to the responsible agent without readi
 
 ## Final payload
 
-The coordinator writes one `final.json` that follows the fixed Schema. It contains surviving findings, rejected findings with compact final disposition reasons, structured unresolved findings requiring human judgment, Stage 1 coverage, and trace counts. It must not contain raw candidates or the full refutation and judgment debate.
+The coordinator writes one `final.json` that follows the fixed Schema. It contains surviving findings, rejected findings, structured unresolved findings, Stage 1 coverage, trace counts, and one `review_records` audit entry for every canonical candidate. Each audit entry preserves the original case for the finding, the independent challenge and its evidence, the final judgment source/basis/evidence, and the exact finding selected for presentation. It must not contain raw candidates or redundant copies of complete intermediate artifacts.
 
 Calculate trace values from unique canonical IDs:
 

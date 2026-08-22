@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Ultrareview pipeline schemas version 2",
+  "title": "Ultrareview pipeline schemas version 3",
   "oneOf": [
     { "$ref": "#/$defs/scope" },
     { "$ref": "#/$defs/lenses" },
@@ -40,6 +40,23 @@
         "status": { "enum": ["verified", "inference"] }
       }
     },
+    "manifestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "setup", "steps", "failure"],
+      "properties": {
+        "kind": {
+          "enum": ["verified_reproduction", "reasoned_scenario"]
+        },
+        "setup": { "type": "string", "minLength": 1 },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "failure": { "type": "string", "minLength": 1 }
+      }
+    },
     "finding": {
       "type": "object",
       "additionalProperties": false,
@@ -51,6 +68,7 @@
         "context",
         "trigger",
         "impact",
+        "manifestation",
         "evidence",
         "recommendation",
         "confidence"
@@ -63,6 +81,7 @@
         "context": { "type": "string", "minLength": 1 },
         "trigger": { "type": "string", "minLength": 1 },
         "impact": { "type": "string", "minLength": 1 },
+        "manifestation": { "$ref": "#/$defs/manifestation" },
         "evidence": {
           "type": "array",
           "minItems": 1,
@@ -70,7 +89,36 @@
         },
         "recommendation": { "type": "string", "minLength": 1 },
         "confidence": { "enum": ["high", "medium", "low"] }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "manifestation": {
+                "properties": {
+                  "kind": { "const": "verified_reproduction" }
+                },
+                "required": ["kind"]
+              }
+            },
+            "required": ["manifestation"]
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "contains": {
+                  "type": "object",
+                  "properties": {
+                    "kind": { "enum": ["test", "command"] },
+                    "status": { "const": "verified" }
+                  },
+                  "required": ["kind", "status"]
+                }
+              }
+            }
+          }
+        }
+      ]
     },
     "raw_finding": {
       "allOf": [
@@ -131,7 +179,7 @@
         "baseline_worktree_status"
       ],
       "properties": {
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "repository_path": { "type": "string", "minLength": 1 },
         "review_kind": { "enum": ["change", "topic"] },
         "target": { "type": "string", "minLength": 1 },
@@ -195,7 +243,7 @@
       "additionalProperties": false,
       "required": ["schema_version", "reviewers"],
       "properties": {
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "reviewers": {
           "type": "array",
           "minItems": 1,
@@ -226,7 +274,7 @@
         "no_delegate"
       ],
       "properties": {
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "stage": {
           "enum": ["adversarial", "dedup", "refutation", "judgment"]
         },
@@ -342,7 +390,7 @@
         "candidates"
       ],
       "properties": {
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "stage": { "const": "adversarial" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -382,7 +430,7 @@
         "canonical_candidates"
       ],
       "properties": {
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "stage": { "const": "dedup" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -454,7 +502,7 @@
         "results"
       ],
       "properties": {
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "stage": { "const": "refutation" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -539,7 +587,7 @@
         "results"
       ],
       "properties": {
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "stage": { "const": "judgment" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -636,6 +684,111 @@
         "residual_risk": { "type": "string", "minLength": 1 }
       }
     },
+    "challenge_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "correctness_analysis",
+        "proportionality_analysis",
+        "evidence",
+        "proposed_finding",
+        "residual_uncertainty"
+      ],
+      "properties": {
+        "verdict": { "enum": ["uphold", "modify", "refute", "unresolved"] },
+        "correctness_analysis": { "type": "string", "minLength": 1 },
+        "proportionality_analysis": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "proposed_finding": {
+          "oneOf": [
+            { "$ref": "#/$defs/canonical_finding" },
+            { "type": "null" }
+          ]
+        },
+        "residual_uncertainty": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "verdict": { "const": "modify" } },
+            "required": ["verdict"]
+          },
+          "then": {
+            "properties": {
+              "proposed_finding": { "$ref": "#/$defs/canonical_finding" }
+            }
+          },
+          "else": {
+            "properties": {
+              "proposed_finding": { "type": "null" }
+            }
+          }
+        }
+      ]
+    },
+    "final_judgment_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "verdict", "basis", "evidence", "residual_risk"],
+      "properties": {
+        "source": { "enum": ["refutation", "judgment"] },
+        "verdict": { "enum": ["uphold", "modify", "reject", "unresolved"] },
+        "basis": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "residual_risk": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "source": { "const": "refutation" } },
+            "required": ["source"]
+          },
+          "then": {
+            "properties": { "verdict": { "const": "uphold" } }
+          }
+        },
+        {
+          "if": {
+            "properties": { "verdict": { "const": "unresolved" } },
+            "required": ["verdict"]
+          },
+          "then": {
+            "properties": {
+              "residual_risk": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "review_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "case_for",
+        "challenge",
+        "final_judgment",
+        "presented_finding"
+      ],
+      "properties": {
+        "candidate_id": { "type": "string", "pattern": "^F[0-9]{3,}$" },
+        "case_for": { "$ref": "#/$defs/canonical_finding" },
+        "challenge": { "$ref": "#/$defs/challenge_record" },
+        "final_judgment": { "$ref": "#/$defs/final_judgment_record" },
+        "presented_finding": { "$ref": "#/$defs/canonical_finding" }
+      }
+    },
     "final": {
       "type": "object",
       "additionalProperties": false,
@@ -645,11 +798,12 @@
         "findings",
         "rejected_findings",
         "unresolved_findings",
+        "review_records",
         "coverage",
         "trace"
       ],
       "properties": {
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "scope": { "$ref": "#/$defs/scope" },
         "findings": {
           "type": "array",
@@ -662,6 +816,10 @@
         "unresolved_findings": {
           "type": "array",
           "items": { "$ref": "#/$defs/unresolved_finding" }
+        },
+        "review_records": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/review_record" }
         },
         "coverage": { "$ref": "#/$defs/final_coverage" },
         "trace": { "$ref": "#/$defs/trace" }
