@@ -8,8 +8,8 @@ A curated collection of reusable AI agent skills, organized into universal workf
 
 | Skill | Description |
 | --- | --- |
-| [`agent-team`](skills/codex/agent-team) | Coordinates job-specific Codex subagents for substantial work that can be split into independent assignments. |
-| [`ultrareview`](skills/codex/ultrareview) | Runs a four-stage, read-only adversarial code review with independent review, deduplication, refutation, and final judgment. |
+| [`agent-team`](skills/codex/agent-team) | Coordinates job-specific Codex subagents for substantial work that can be split into independent assignments. Based on Eric Provencher's [*Practical multi-agent orchestration in Codex*](https://x.com/pvncher/status/2080707291603407077). |
+| [`ultrareview`](skills/codex/ultrareview) | Runs a four-stage, read-only adversarial code review with independent review, deduplication, refutation, and final judgment. Inspired by Claude Code's [dynamic workflows](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code). |
 
 ### Universal
 
