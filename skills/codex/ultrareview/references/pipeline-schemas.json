@@ -1,0 +1,671 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Ultrareview pipeline schemas version 2",
+  "oneOf": [
+    { "$ref": "#/$defs/scope" },
+    { "$ref": "#/$defs/lenses" },
+    { "$ref": "#/$defs/task_packet" },
+    { "$ref": "#/$defs/adversarial" },
+    { "$ref": "#/$defs/dedup" },
+    { "$ref": "#/$defs/refutation" },
+    { "$ref": "#/$defs/judgment" },
+    { "$ref": "#/$defs/final" }
+  ],
+  "$defs": {
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "start_line", "end_line"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "statement", "status"],
+      "properties": {
+        "kind": {
+          "enum": ["source", "test", "caller", "history", "command", "contract"]
+        },
+        "location": {
+          "oneOf": [
+            { "$ref": "#/$defs/location" },
+            { "type": "null" }
+          ]
+        },
+        "statement": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["verified", "inference"] }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "priority",
+        "title",
+        "location",
+        "context",
+        "trigger",
+        "impact",
+        "evidence",
+        "recommendation",
+        "confidence"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+        "title": { "type": "string", "minLength": 1 },
+        "location": { "$ref": "#/$defs/location" },
+        "context": { "type": "string", "minLength": 1 },
+        "trigger": { "type": "string", "minLength": 1 },
+        "impact": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "recommendation": { "type": "string", "minLength": 1 },
+        "confidence": { "enum": ["high", "medium", "low"] }
+      }
+    },
+    "raw_finding": {
+      "allOf": [
+        { "$ref": "#/$defs/finding" },
+        {
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._-]+:C[0-9]{2,}$"
+            }
+          }
+        }
+      ]
+    },
+    "canonical_finding": {
+      "allOf": [
+        { "$ref": "#/$defs/finding" },
+        {
+          "properties": {
+            "id": { "type": "string", "pattern": "^F[0-9]{3,}$" }
+          }
+        }
+      ]
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inspected_paths", "checks_run", "gaps"],
+      "properties": {
+        "inspected_paths": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "checks_run": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "gaps": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "repository_path",
+        "review_kind",
+        "target",
+        "comparison_base",
+        "topic",
+        "exclusions",
+        "instruction_files",
+        "finding_standard",
+        "baseline_worktree_status"
+      ],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "repository_path": { "type": "string", "minLength": 1 },
+        "review_kind": { "enum": ["change", "topic"] },
+        "target": { "type": "string", "minLength": 1 },
+        "comparison_base": { "type": ["string", "null"] },
+        "topic": { "type": ["string", "null"] },
+        "exclusions": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "instruction_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "finding_standard": { "type": "string", "minLength": 1 },
+        "baseline_worktree_status": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "review_kind": { "const": "change" } },
+            "required": ["review_kind"]
+          },
+          "then": {
+            "properties": {
+              "comparison_base": { "type": "string", "minLength": 1 },
+              "topic": { "type": "null" }
+            }
+          },
+          "else": {
+            "properties": {
+              "comparison_base": { "type": "null" },
+              "topic": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "lens": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agent_id", "lane", "focus"],
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "lane": { "type": "string", "minLength": 1 },
+        "focus": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "lenses": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "reviewers"],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "reviewers": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/lens" }
+        }
+      }
+    },
+    "task_packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "stage",
+        "task_id",
+        "attempt",
+        "agent_id",
+        "scope_path",
+        "schema_path",
+        "coordinator_path",
+        "input_paths",
+        "assigned_ids",
+        "lane",
+        "instructions",
+        "output_path",
+        "validation_command",
+        "artifact_schema_ref",
+        "read_only",
+        "no_delegate"
+      ],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "stage": {
+          "enum": ["adversarial", "dedup", "refutation", "judgment"]
+        },
+        "task_id": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "scope_path": { "type": "string", "minLength": 1 },
+        "schema_path": { "type": "string", "minLength": 1 },
+        "coordinator_path": { "type": "string", "minLength": 1 },
+        "input_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "assigned_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "lane": { "type": ["string", "null"] },
+        "instructions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "output_path": { "type": "string", "minLength": 1 },
+        "validation_command": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "artifact_schema_ref": {
+          "enum": [
+            "#/$defs/adversarial",
+            "#/$defs/dedup",
+            "#/$defs/refutation",
+            "#/$defs/judgment"
+          ]
+        },
+        "read_only": { "const": true },
+        "no_delegate": { "const": true }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "stage": { "const": "adversarial" } },
+            "required": ["stage"]
+          },
+          "then": {
+            "properties": {
+              "lane": { "type": "string", "minLength": 1 },
+              "artifact_schema_ref": { "const": "#/$defs/adversarial" }
+            }
+          },
+          "else": {
+            "properties": {
+              "lane": { "type": "null" },
+              "input_paths": { "minItems": 1 },
+              "assigned_ids": { "minItems": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "stage": { "const": "dedup" } },
+            "required": ["stage"]
+          },
+          "then": {
+            "properties": {
+              "artifact_schema_ref": { "const": "#/$defs/dedup" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "stage": { "const": "refutation" } },
+            "required": ["stage"]
+          },
+          "then": {
+            "properties": {
+              "artifact_schema_ref": { "const": "#/$defs/refutation" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "stage": { "const": "judgment" } },
+            "required": ["stage"]
+          },
+          "then": {
+            "properties": {
+              "artifact_schema_ref": { "const": "#/$defs/judgment" }
+            }
+          }
+        }
+      ]
+    },
+    "adversarial": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "stage",
+        "task_id",
+        "attempt",
+        "agent_id",
+        "lane",
+        "coverage",
+        "candidates"
+      ],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "stage": { "const": "adversarial" },
+        "task_id": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "agent_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+        "lane": { "type": "string", "minLength": 1 },
+        "coverage": { "$ref": "#/$defs/coverage" },
+        "candidates": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/raw_finding" }
+        }
+      }
+    },
+    "canonical_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding", "source_candidate_ids", "merge_basis"],
+      "properties": {
+        "finding": { "$ref": "#/$defs/canonical_finding" },
+        "source_candidate_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "merge_basis": { "type": "string", "minLength": 1 }
+      }
+    },
+    "dedup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "stage",
+        "task_id",
+        "attempt",
+        "agent_id",
+        "canonical_candidates"
+      ],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "stage": { "const": "dedup" },
+        "task_id": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "agent_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+        "canonical_candidates": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/canonical_candidate" }
+        }
+      }
+    },
+    "refutation_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "verdict",
+        "correctness_analysis",
+        "proportionality_analysis",
+        "evidence",
+        "replacement_finding",
+        "residual_uncertainty"
+      ],
+      "properties": {
+        "candidate_id": { "type": "string", "pattern": "^F[0-9]{3,}$" },
+        "verdict": { "enum": ["uphold", "modify", "refute", "unresolved"] },
+        "correctness_analysis": { "type": "string", "minLength": 1 },
+        "proportionality_analysis": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "replacement_finding": {
+          "oneOf": [
+            { "$ref": "#/$defs/canonical_finding" },
+            { "type": "null" }
+          ]
+        },
+        "residual_uncertainty": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "verdict": { "const": "modify" } },
+            "required": ["verdict"]
+          },
+          "then": {
+            "properties": {
+              "replacement_finding": { "$ref": "#/$defs/canonical_finding" }
+            }
+          },
+          "else": {
+            "properties": {
+              "replacement_finding": { "type": "null" }
+            }
+          }
+        }
+      ]
+    },
+    "refutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "stage",
+        "task_id",
+        "attempt",
+        "agent_id",
+        "results"
+      ],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "stage": { "const": "refutation" },
+        "task_id": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "agent_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+        "results": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/refutation_result" }
+        }
+      }
+    },
+    "judgment_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "verdict",
+        "resolved_points",
+        "evidence",
+        "final_finding",
+        "residual_risk"
+      ],
+      "properties": {
+        "candidate_id": { "type": "string", "pattern": "^F[0-9]{3,}$" },
+        "verdict": { "enum": ["uphold", "modify", "reject", "unresolved"] },
+        "resolved_points": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "final_finding": {
+          "oneOf": [
+            { "$ref": "#/$defs/canonical_finding" },
+            { "type": "null" }
+          ]
+        },
+        "residual_risk": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "verdict": { "const": "modify" } },
+            "required": ["verdict"]
+          },
+          "then": {
+            "properties": {
+              "final_finding": { "$ref": "#/$defs/canonical_finding" }
+            }
+          },
+          "else": {
+            "properties": {
+              "final_finding": { "type": "null" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "verdict": { "const": "unresolved" } },
+            "required": ["verdict"]
+          },
+          "then": {
+            "properties": {
+              "residual_risk": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "judgment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "stage",
+        "task_id",
+        "attempt",
+        "agent_id",
+        "results"
+      ],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "stage": { "const": "judgment" },
+        "task_id": { "type": "string", "minLength": 1 },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "agent_id": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" },
+        "results": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/judgment_result" }
+        }
+      }
+    },
+    "final_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["review_lanes", "checks_run", "gaps"],
+      "properties": {
+        "review_lanes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "checks_run": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "gaps": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "trace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewers_completed",
+        "raw_candidates",
+        "canonical_candidates",
+        "refutation_results",
+        "judgment_results",
+        "rejected_findings",
+        "unresolved",
+        "final_findings"
+      ],
+      "properties": {
+        "reviewers_completed": { "type": "integer", "minimum": 0 },
+        "raw_candidates": { "type": "integer", "minimum": 0 },
+        "canonical_candidates": { "type": "integer", "minimum": 0 },
+        "refutation_results": { "type": "integer", "minimum": 0 },
+        "judgment_results": { "type": "integer", "minimum": 0 },
+        "rejected_findings": { "type": "integer", "minimum": 0 },
+        "unresolved": { "type": "integer", "minimum": 0 },
+        "final_findings": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "rejected_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding",
+        "refutation_verdict",
+        "judgment_verdict",
+        "reason"
+      ],
+      "properties": {
+        "finding": { "$ref": "#/$defs/canonical_finding" },
+        "refutation_verdict": {
+          "enum": ["modify", "refute", "unresolved"]
+        },
+        "judgment_verdict": { "const": "reject" },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "unresolved_finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding",
+        "refutation_verdict",
+        "judgment_verdict",
+        "resolved_points",
+        "residual_risk"
+      ],
+      "properties": {
+        "finding": { "$ref": "#/$defs/canonical_finding" },
+        "refutation_verdict": {
+          "enum": ["modify", "refute", "unresolved"]
+        },
+        "judgment_verdict": { "const": "unresolved" },
+        "resolved_points": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "residual_risk": { "type": "string", "minLength": 1 }
+      }
+    },
+    "final": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "scope",
+        "findings",
+        "rejected_findings",
+        "unresolved_findings",
+        "coverage",
+        "trace"
+      ],
+      "properties": {
+        "schema_version": { "const": 2 },
+        "scope": { "$ref": "#/$defs/scope" },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/canonical_finding" }
+        },
+        "rejected_findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/rejected_finding" }
+        },
+        "unresolved_findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/unresolved_finding" }
+        },
+        "coverage": { "$ref": "#/$defs/final_coverage" },
+        "trace": { "$ref": "#/$defs/trace" }
+      }
+    }
+  }
+}

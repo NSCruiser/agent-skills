@@ -1,0 +1,6 @@
+interface:
+  display_name: "Agent Team"
+  short_description: "Coordinate job-specific agents for complex work"
+  default_prompt: "Use $agent-team to divide this task into clear assignments, delegate suitable work, and synthesize the results."
+policy:
+  allow_implicit_invocation: false

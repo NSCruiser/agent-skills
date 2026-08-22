@@ -1,0 +1,31 @@
+{
+  "schema_version": 2,
+  "adversarial": [
+    "Read scope.json first, then read and follow every file in scope.instruction_files.",
+    "Complete the adversarial lane '{lane}' in one pass by directly inspecting repository source, reachable callers, relevant tests, and applicable contracts.",
+    "Stay within scope.target, scope.topic, and scope.exclusions. Report only discrete actionable defects meeting scope.finding_standard; write an empty candidates list when none qualify.",
+    "Record exact repository paths and tight line ranges. Separate verified evidence from inference. Do not run checks that write the repository or any remote service.",
+    "Write only the fixed #/$defs/adversarial JSON artifact to output_path. Before sending the receipt, execute the packet's validation_command argv exactly. Do not modify repository files, do not delegate, and reveal no finding content in the receipt."
+  ],
+  "dedup": [
+    "Read scope.json first, then read and follow every file in scope.instruction_files.",
+    "Read every adversarial artifact in input_paths and cover every raw ID in assigned_ids exactly once.",
+    "Merge candidates only when root cause, trigger, impact, and remedy are materially the same. Do not decide validity and do not drop doubtful unique candidates.",
+    "Assign unique stable F### IDs, preserve a complete non-overlapping source_candidate_ids mapping, and provide a non-empty merge_basis.",
+    "Write only the fixed #/$defs/dedup JSON artifact to output_path. Before sending the receipt, execute the packet's validation_command argv exactly. Work read-only, do not delegate, and reveal no finding content in the receipt."
+  ],
+  "refutation": [
+    "Read scope.json first, then read and follow every file in scope.instruction_files.",
+    "Read the dedup artifact in input_paths and evaluate every canonical ID in assigned_ids exactly once.",
+    "Directly inspect relevant source, callers, contracts, tests, and history when useful. Check reachability, scope, intent, persistent or operational impact, applicable convergence requirements, and recommendation proportionality.",
+    "Use verdict uphold, modify, refute, or unresolved. A modify result must include a complete same-ID replacement_finding; all other results must use null.",
+    "Write only the fixed #/$defs/refutation JSON artifact to output_path. Before sending the receipt, execute the packet's validation_command argv exactly. Work read-only, do not delegate, and reveal no finding content in the receipt."
+  ],
+  "judgment": [
+    "Read scope.json first, then read and follow every file in scope.instruction_files.",
+    "Read the dedup and refutation artifacts in input_paths and issue one binding result for every disputed ID in assigned_ids exactly once.",
+    "Directly inspect relevant repository source, callers, contracts, tests, and history when useful. Resolve the dispute without adding a second semantic review round.",
+    "Use verdict uphold, modify, reject, or unresolved and record at least one non-empty resolved_points entry explaining the binding result. Modify requires a complete same-ID final_finding; all other verdicts must use null. A rejection must explain why the candidate does not qualify, and unresolved must state the material residual_risk.",
+    "Write only the fixed #/$defs/judgment JSON artifact to output_path. Before sending the receipt, execute the packet's validation_command argv exactly. Work read-only, do not delegate, and reveal no finding content in the receipt."
+  ]
+}
