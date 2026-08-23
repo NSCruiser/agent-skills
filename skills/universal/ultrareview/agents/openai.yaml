@@ -1,0 +1,7 @@
+interface:
+  display_name: "Ultrareview"
+  short_description: "Portable adversarial review using staged artifacts"
+  default_prompt: "Use $ultrareview to review this bounded code change or topic in four stages with filesystem artifacts and the smallest useful worker set."
+
+policy:
+  allow_implicit_invocation: false

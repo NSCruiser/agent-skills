@@ -1,7 +1,0 @@
-interface:
-  display_name: "Ultrareview"
-  short_description: "Adversarial review using files between stages"
-  default_prompt: "Use $ultrareview to conduct an adversarial review of this code change in four stages, using files to pass results between agents."
-
-policy:
-  allow_implicit_invocation: false

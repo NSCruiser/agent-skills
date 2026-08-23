@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Coordinate one isolated Ultrareview run using the fixed version 3 protocol."""
+"""Coordinate one harness-independent Ultrareview run using protocol v3."""
 
 from __future__ import annotations
 
 import json
 import os
 import re
+import subprocess
 import sys
 import unicodedata
 import uuid
@@ -18,6 +19,7 @@ SCOPE_PATH = ROOT / "scope.json"
 LENSES_PATH = ROOT / "lenses.json"
 SCHEMA_PATH = ROOT / "pipeline-schemas.json"
 STAGE_INSTRUCTIONS_PATH = ROOT / "stage-instructions.json"
+REPOSITORY_BINDING_PATH = ROOT / "repository.json"
 STATE_PATH = ROOT / ".pipeline-state.json"
 CANONICAL_ID = re.compile(r"^F[0-9]{3,}$")
 RAW_ID = re.compile(r"^[A-Za-z0-9._-]+:C[0-9]{2,}$")
@@ -112,6 +114,38 @@ def read_json(path: Path, stage: str = "coordinator", task_id: str = "coordinato
         raise ValidationError(stage, task_id, "invalid_json_or_path", [str(path)]) from exc
     require(isinstance(value, dict), stage, task_id, "invalid_type", "$")
     return value
+
+
+def load_bound_repository(stage: str, task_id: str) -> Path:
+    binding = read_json(REPOSITORY_BINDING_PATH, stage, task_id)
+    mapping = exact_keys(binding, {"repository_path"}, stage, task_id, "$.repository_binding")
+    raw_path = nonempty_string(
+        mapping["repository_path"], stage, task_id, "$.repository_binding.repository_path"
+    )
+    path = Path(raw_path)
+    require(path.is_absolute(), stage, task_id, "repository_not_absolute",
+            "$.repository_binding.repository_path")
+    repository = path.resolve(strict=False)
+    require(repository.is_dir(), stage, task_id, "repository_missing",
+            "$.repository_binding.repository_path")
+    return repository
+
+
+def git_worktree_status(repository: Path, stage: str, task_id: str) -> list[str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repository), "status", "--short", "--untracked-files=all"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise ValidationError(
+            stage, task_id, "worktree_status_unavailable", [str(repository)]
+        ) from exc
+    require(result.returncode == 0, stage, task_id, "worktree_status_unavailable",
+            "$.baseline_worktree_status")
+    return result.stdout.splitlines()
 
 
 def atomic_write(path: Path, value: dict) -> None:
@@ -220,7 +254,14 @@ def validate_scope(value: object, stage: str = "init", task_id: str = "scope") -
     mapping = exact_keys(value, keys, stage, task_id, "$")
     require(mapping["schema_version"] == SCHEMA_VERSION, stage, task_id,
             "invalid_version", "$.schema_version")
-    nonempty_string(mapping["repository_path"], stage, task_id, "$.repository_path")
+    repository_path = nonempty_string(
+        mapping["repository_path"], stage, task_id, "$.repository_path"
+    )
+    declared_repository = Path(repository_path)
+    require(declared_repository.is_absolute(), stage, task_id, "repository_not_absolute",
+            "$.repository_path")
+    require(declared_repository.resolve(strict=False) == load_bound_repository(stage, task_id),
+            stage, task_id, "scope_repository_mismatch", "$.repository_path")
     require(mapping["review_kind"] in {"change", "topic"}, stage, task_id, "invalid_enum", "$.review_kind")
     nonempty_string(mapping["target"], stage, task_id, "$.target")
     if mapping["review_kind"] == "topic":
@@ -233,6 +274,13 @@ def validate_scope(value: object, stage: str = "init", task_id: str = "scope") -
     string_list(mapping["instruction_files"], stage, task_id, "$.instruction_files", unique=True)
     nonempty_string(mapping["finding_standard"], stage, task_id, "$.finding_standard")
     string_list(mapping["baseline_worktree_status"], stage, task_id, "$.baseline_worktree_status")
+
+
+def require_worktree_unchanged(scope: dict, stage: str, task_id: str) -> None:
+    repository = load_bound_repository(stage, task_id)
+    actual = git_worktree_status(repository, stage, task_id)
+    require(actual == scope["baseline_worktree_status"], stage, task_id,
+            "worktree_changed", "$.baseline_worktree_status")
 
 
 def validate_lenses(value: object) -> None:
@@ -657,7 +705,8 @@ def validate_final_judgment_record(value: object, challenge: dict,
     return row
 
 
-def validate_final_payload(value: object, expected_scope: dict) -> None:
+def validate_final_payload(value: object, expected_scope: dict,
+                           expected_trace: dict[str, int]) -> None:
     stage = "finalize"
     task_id = "final"
     mapping = exact_keys(
@@ -810,6 +859,14 @@ def validate_final_payload(value: object, expected_scope: dict) -> None:
                 "missing_final_disposition", f"{field}.candidate_id")
         require(row["presented_finding"] == presented_by_id[candidate_id], stage, task_id,
                 "presented_finding_mismatch", f"{field}.presented_finding")
+        if final_judgment["verdict"] != "modify":
+            disputed_finding = (
+                challenge["proposed_finding"]
+                if challenge["verdict"] == "modify"
+                else row["case_for"]
+            )
+            require(row["presented_finding"] == disputed_finding, stage, task_id,
+                    "judgment_selection_mismatch", f"{field}.presented_finding")
         expected_verdicts = (
             {"uphold", "modify"} if candidate_id in finding_ids
             else {"reject"} if candidate_id in rejected_ids
@@ -854,10 +911,11 @@ def validate_final_payload(value: object, expected_scope: dict) -> None:
         "trace_invariant",
         "$.trace.canonical_candidates",
     )
-    require(trace["raw_candidates"] >= trace["canonical_candidates"], stage, task_id,
-            "trace_invariant", "$.trace.raw_candidates")
     require(trace["refutation_results"] == trace["canonical_candidates"], stage, task_id,
             "trace_invariant", "$.trace.refutation_results")
+    for key, expected in expected_trace.items():
+        require(trace[key] == expected, stage, task_id,
+                "trace_invariant", f"$.trace.{key}")
 
 
 def artifact_record_count(stage: str, artifact: dict) -> int:
@@ -903,6 +961,9 @@ def command_scaffold_artifact(raw_packet_path: str) -> None:
     task_id = packet.get("task_id", "coordinator")
     validate_packet(packet, stage, task_id)
     require_current_packet(state, packet_path, packet)
+    scope = read_json(SCOPE_PATH, stage, task_id)
+    validate_scope(scope, stage, task_id)
+    require_worktree_unchanged(scope, stage, task_id)
     output_path = safe_path(packet["output_path"])
     require(not output_path.exists(), stage, task_id, "artifact_exists", str(output_path))
     artifact: dict = {
@@ -939,6 +1000,9 @@ def command_validate_artifact(raw_packet_path: str, raw_artifact_path: str) -> N
     task_id = packet.get("task_id", "coordinator")
     validate_packet(packet, stage, task_id)
     require_current_packet(state, packet_path, packet)
+    scope = read_json(SCOPE_PATH, stage, task_id)
+    validate_scope(scope, stage, task_id)
+    require_worktree_unchanged(scope, stage, task_id)
     require(str(artifact_path) == str(safe_path(packet["output_path"])), stage, task_id,
             "unexpected_artifact", str(artifact_path))
     artifact = read_json(artifact_path, stage, task_id)
@@ -965,6 +1029,7 @@ def command_init() -> None:
     stage_instructions = load_stage_instructions()
     validate_scope(scope)
     validate_lenses(lenses)
+    require_worktree_unchanged(scope, "init", "scope")
     state = {"phase": "adversarial", "current_packets": {}, "accepted": {}}
     for reviewer in lenses["reviewers"]:
         instructions = [
@@ -989,6 +1054,9 @@ def command_seal_adversarial(raw_paths: list[str]) -> None:
     state = load_state()
     require(state.get("phase") == "adversarial", "adversarial", "coordinator",
             "invalid_phase", "$.phase")
+    scope = read_json(SCOPE_PATH, "adversarial", "coordinator")
+    validate_scope(scope, "adversarial", "coordinator")
+    require_worktree_unchanged(scope, "adversarial", "coordinator")
     rows = match_artifact_paths(state, "adversarial", raw_paths)
     all_ids: list[str] = []
     for packet, artifact, _ in rows:
@@ -1024,6 +1092,9 @@ def command_seal_adversarial(raw_paths: list[str]) -> None:
 def command_accept_dedup(raw_path: str, worker_count: int) -> None:
     state = load_state()
     require(state.get("phase") == "dedup", "dedup", "coordinator", "invalid_phase", "$.phase")
+    scope = read_json(SCOPE_PATH, "dedup", "coordinator")
+    validate_scope(scope, "dedup", "coordinator")
+    require_worktree_unchanged(scope, "dedup", "coordinator")
     rows = match_artifact_paths(state, "dedup", [raw_path])
     packet, artifact, path = rows[0]
     validate_dedup(packet, artifact, set(state["raw_ids"]))
@@ -1054,6 +1125,9 @@ def command_accept_refutation(raw_paths: list[str], worker_count: int) -> None:
     state = load_state()
     require(state.get("phase") == "refutation", "refutation", "coordinator",
             "invalid_phase", "$.phase")
+    scope = read_json(SCOPE_PATH, "refutation", "coordinator")
+    validate_scope(scope, "refutation", "coordinator")
+    require_worktree_unchanged(scope, "refutation", "coordinator")
     rows = match_artifact_paths(state, "refutation", raw_paths)
     covered: list[str] = []
     disputed: list[str] = []
@@ -1099,6 +1173,9 @@ def command_accept_judgment(raw_paths: list[str]) -> None:
     state = load_state()
     require(state.get("phase") == "judgment", "judgment", "coordinator",
             "invalid_phase", "$.phase")
+    scope = read_json(SCOPE_PATH, "judgment", "coordinator")
+    validate_scope(scope, "judgment", "coordinator")
+    require_worktree_unchanged(scope, "judgment", "coordinator")
     rows = match_artifact_paths(state, "judgment", raw_paths)
     covered: list[str] = []
     for packet, artifact, _ in rows:
@@ -1131,17 +1208,29 @@ def aggregate_coverage(state: dict) -> dict:
     }
 
 
+def expected_trace_from_state(state: dict) -> dict[str, int]:
+    return {
+        "reviewers_completed": len(state.get("accepted", {}).get("adversarial", [])),
+        "raw_candidates": len(state.get("raw_ids", [])),
+        "canonical_candidates": len(state.get("canonical_ids", [])),
+        "refutation_results": len(state.get("canonical_ids", [])),
+        "judgment_results": len(state.get("disputed_ids", [])),
+    }
+
+
 def command_finalize() -> None:
     state = load_state()
     require(state.get("phase") in {"ready_finalize", "ready_finalize_empty", "finalized"},
             "finalize", "coordinator", "invalid_phase", "$.phase")
+    scope = read_json(SCOPE_PATH, "finalize", "coordinator")
+    validate_scope(scope, "finalize", "coordinator")
+    require_worktree_unchanged(scope, "finalize", "coordinator")
     final_path = ROOT / "final" / "final.json"
     if state.get("phase") == "finalized":
         final = read_json(final_path, "finalize", "final")
         trace = final["trace"]
         print("FINALIZED", final_path, *(f"{key}={value}" for key, value in trace.items()))
         return
-    scope = read_json(SCOPE_PATH, "finalize", "scope")
     findings: list[dict] = []
     rejected_findings: list[dict] = []
     unresolved_findings: list[dict] = []
@@ -1198,7 +1287,7 @@ def command_finalize() -> None:
                 )
                 judgment = judgments[candidate_id]
                 if judgment["verdict"] == "uphold":
-                    presented_finding = case_for
+                    presented_finding = disputed_finding
                     findings.append(presented_finding)
                 elif judgment["verdict"] == "modify":
                     presented_finding = judgment["final_finding"]
@@ -1273,6 +1362,7 @@ def command_finalize() -> None:
         "coverage": aggregate_coverage(state),
         "trace": trace,
     }
+    validate_final_payload(final, scope, expected_trace_from_state(state))
     atomic_write(final_path, final)
     state["phase"] = "finalized"
     save_state(state)
@@ -1289,6 +1379,9 @@ def command_retry_packet(raw_packet_path: str) -> None:
     stage = packet.get("stage", "retry")
     validate_packet(packet, stage, packet.get("task_id", "coordinator"))
     require_current_packet(state, old_path, packet)
+    scope = read_json(SCOPE_PATH, stage, packet["task_id"])
+    validate_scope(scope, stage, packet["task_id"])
+    require_worktree_unchanged(scope, stage, packet["task_id"])
     active = state.get("current_packets", {}).get(stage, [])
     require(str(old_path) in [str(safe_path(item)) for item in active], stage,
             packet["task_id"], "packet_not_current", str(old_path))
@@ -1326,8 +1419,7 @@ def command_status() -> None:
 def source_path(scope: dict, location: dict, field: str) -> Path:
     stage = "validate-final"
     task_id = "final"
-    repository = Path(scope["repository_path"]).resolve(strict=False)
-    require(repository.is_dir(), stage, task_id, "repository_missing", "$.scope.repository_path")
+    repository = load_bound_repository(stage, task_id)
     raw_path = Path(location["path"])
     candidate = raw_path.resolve(strict=False) if raw_path.is_absolute() else (
         repository / raw_path
@@ -1341,10 +1433,15 @@ def source_path(scope: dict, location: dict, field: str) -> Path:
 
 
 def command_validate_final() -> None:
+    expected_scope = read_json(SCOPE_PATH, "validate-final", "scope")
+    validate_scope(expected_scope, "validate-final", "scope")
+    require_worktree_unchanged(expected_scope, "validate-final", "scope")
     final_path = ROOT / "final" / "final.json"
     final = read_json(final_path, "validate-final", "final")
-    expected_scope = read_json(SCOPE_PATH, "validate-final", "scope")
-    validate_final_payload(final, expected_scope)
+    state = load_state()
+    require(state.get("phase") == "finalized", "validate-final", "final",
+            "invalid_phase", "$.phase")
+    validate_final_payload(final, expected_scope, expected_trace_from_state(state))
     located_findings = [
         (f"$.findings[{index}].location", finding)
         for index, finding in enumerate(final["findings"])

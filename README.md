@@ -9,13 +9,14 @@ A curated collection of reusable AI agent skills, organized into universal workf
 | Skill | Description |
 | --- | --- |
 | [`agent-team`](skills/codex/agent-team) | Coordinates job-specific Codex subagents for substantial work that can be split into independent assignments. Based on Eric Provencher's [*Practical multi-agent orchestration in Codex*](https://x.com/pvncher/status/2080707291603407077). |
-| [`ultrareview`](skills/codex/ultrareview) | Runs a four-stage, read-only adversarial code review with independent review, deduplication, refutation, and final judgment. Inspired by Claude Code's [dynamic workflows](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code). |
 
 ### Universal
 
-No universal skills are published yet.
+| Skill | Description |
+| --- | --- |
+| [`ultrareview`](skills/universal/ultrareview) | Runs a portable four-stage, read-only adversarial code review with independent review, deduplication, refutation, and final judgment. Inspired by Claude Code's [dynamic workflows](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code). |
 
-`ultrareview` has a portable Python/JSON pipeline, but the current skill package still depends on Codex-specific orchestration such as `fork_turns`, shared subagent capacity, and leaf-agent scheduling. It therefore remains Codex-only until other harness adapters exist.
+`ultrareview` uses a Python/JSON pipeline and self-contained filesystem packets that any harness with isolated worker tasks can execute. It retains optional Codex guidance and `agents/openai.yaml` metadata without depending on those features for its core workflow.
 
 ## Repository layout
 
@@ -36,10 +37,14 @@ Use Codex's bundled skill installer to copy selected skills into `${CODEX_HOME:-
 ```bash
 python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
   --repo NSCruiser/agent-skills \
-  --path skills/codex/agent-team skills/codex/ultrareview
+  --path skills/codex/agent-team skills/universal/ultrareview
 ```
 
 This is a snapshot install. The installer intentionally stops when a destination already exists, so it does not act as an updater.
+
+## Install in other harnesses
+
+Install or copy [`skills/universal/ultrareview`](skills/universal/ultrareview) with the harness's native skill mechanism. The harness must provide Git, Python 3, isolated worker tasks, waiting/status primitives, and worker access to the reviewed repository plus a shared temporary directory; no Codex-specific adapter is required.
 
 ## Classification
 
@@ -56,5 +61,5 @@ A skill belongs in `skills/codex/` when removing Codex runtime behavior would ch
 Validate each skill after changing it. Skills with deterministic scripts should also keep behavior-focused tests alongside the skill. For example:
 
 ```bash
-python3 skills/codex/ultrareview/tests/test_pipeline.py
+python3 skills/universal/ultrareview/tests/test_pipeline.py
 ```

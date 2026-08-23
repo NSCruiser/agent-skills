@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create an isolated Ultrareview run directory from packaged resources."""
+"""Create a harness-independent Ultrareview run from packaged resources."""
 
 from __future__ import annotations
 
@@ -55,6 +55,16 @@ def atomic_copy(source: Path, target: Path) -> None:
     os.replace(temporary, target)
 
 
+def atomic_write_json(target: Path, value: dict) -> None:
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    with temporary.open("x", encoding="utf-8") as handle:
+        json.dump(value, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, target)
+
+
 def verify_scope_repository(scope_path: Path, repository: Path) -> None:
     try:
         with scope_path.open("r", encoding="utf-8") as handle:
@@ -105,6 +115,9 @@ def main() -> None:
             fail(f"packaged_file_missing {source}")
         atomic_copy(source, run_root / relative_target)
 
+    repository_binding_path = run_root / "repository.json"
+    atomic_write_json(repository_binding_path, {"repository_path": str(repository)})
+
     if args.scope and args.lenses:
         scope_path = Path(args.scope).resolve(strict=True)
         lenses_path = Path(args.lenses).resolve(strict=True)
@@ -113,6 +126,7 @@ def main() -> None:
         atomic_copy(lenses_path, run_root / "lenses.json")
 
     print(f"RUN_CREATED {run_root}")
+    print(f"REPOSITORY_BINDING_PATH {repository_binding_path}")
     print(f"SCOPE_PATH {run_root / 'scope.json'}")
     print(f"LENSES_PATH {run_root / 'lenses.json'}")
     print(f"COORDINATOR_PATH {run_root / 'pipeline.py'}")

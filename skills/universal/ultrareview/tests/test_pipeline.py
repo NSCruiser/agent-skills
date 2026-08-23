@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Behavioral tests for the packaged Ultrareview coordinator."""
+"""Behavioral tests for the portable Ultrareview coordinator."""
 
 from __future__ import annotations
 
@@ -32,6 +32,27 @@ class PipelineCase(unittest.TestCase):
         )
         instructions = self.repository / "AGENTS.md"
         instructions.write_text("Review read-only.\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "init", "-q", str(self.repository)],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repository), "add", "--all"],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        baseline = subprocess.run(
+            [
+                "git", "-C", str(self.repository), "status", "--short",
+                "--untracked-files=all",
+            ],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.splitlines()
         self.scope_source = self.root / "prepared-scope.json"
         self.lenses_source = self.root / "prepared-lenses.json"
         write_json(self.scope_source, {
@@ -44,7 +65,7 @@ class PipelineCase(unittest.TestCase):
             "exclusions": ["UI-only behavior"],
             "instruction_files": [str(instructions)],
             "finding_standard": "Only discrete actionable defects with a reachable impact.",
-            "baseline_worktree_status": [],
+            "baseline_worktree_status": baseline,
         })
         write_json(self.lenses_source, {
             "schema_version": 3,
@@ -170,6 +191,79 @@ class PipelineCase(unittest.TestCase):
         self.assertEqual(final["unresolved_findings"], [])
         self.assertEqual(final["review_records"], [])
         self.assertEqual(final["trace"]["canonical_candidates"], 0)
+
+    def test_validate_final_rejects_trace_counts_that_disagree_with_state(self) -> None:
+        self.command("init")
+        _, artifact_path = self.write_adversarial([])
+        self.command("seal-adversarial", str(artifact_path))
+        final_path = self.run_root / "final" / "final.json"
+        original = json.loads(final_path.read_text(encoding="utf-8"))
+
+        for key in ("reviewers_completed", "raw_candidates", "judgment_results"):
+            tampered = json.loads(json.dumps(original))
+            tampered["trace"][key] += 1
+            write_json(final_path, tampered)
+            failure = self.command("validate-final", expected_code=2)
+            self.assertIn(f"$.trace.{key}", failure.stdout)
+
+        write_json(final_path, original)
+        self.command("validate-final")
+
+    def test_bootstrap_binding_supports_scope_written_after_creation(self) -> None:
+        run_root = self.root / "postwritten-run"
+        result = self.run_process(
+            BOOTSTRAP,
+            "--repository", str(self.repository),
+            "--run-root", str(run_root),
+        )
+        self.assertIn("REPOSITORY_BINDING_PATH", result.stdout)
+        write_json(
+            run_root / "scope.json",
+            json.loads(self.scope_source.read_text(encoding="utf-8")),
+        )
+        write_json(
+            run_root / "lenses.json",
+            json.loads(self.lenses_source.read_text(encoding="utf-8")),
+        )
+        initialized = self.run_process(run_root / "pipeline.py", "init")
+        self.assertIn("STAGE_READY adversarial 1", initialized.stdout)
+
+    def test_bootstrap_binding_rejects_mismatched_scope_repository(self) -> None:
+        run_root = self.root / "mismatched-run"
+        self.run_process(
+            BOOTSTRAP,
+            "--repository", str(self.repository),
+            "--run-root", str(run_root),
+        )
+        other_repository = self.root / "other-repository"
+        other_repository.mkdir()
+        scope = json.loads(self.scope_source.read_text(encoding="utf-8"))
+        scope["repository_path"] = "relative-repository"
+        write_json(run_root / "scope.json", scope)
+        write_json(
+            run_root / "lenses.json",
+            json.loads(self.lenses_source.read_text(encoding="utf-8")),
+        )
+        relative_failure = self.run_process(
+            run_root / "pipeline.py", "init", expected_code=2,
+        )
+        self.assertIn("repository_not_absolute", relative_failure.stdout)
+
+        scope["repository_path"] = str(other_repository)
+        write_json(run_root / "scope.json", scope)
+        failure = self.run_process(
+            run_root / "pipeline.py", "init", expected_code=2,
+        )
+        self.assertIn("scope_repository_mismatch", failure.stdout)
+
+    def test_worktree_drift_blocks_artifact_validation(self) -> None:
+        self.command("init")
+        packet_path, _ = self.one_packet("adversarial")
+        (self.repository / "sample.py").write_text("mutated\n", encoding="utf-8")
+        failure = self.command(
+            "scaffold-artifact", str(packet_path), expected_code=2,
+        )
+        self.assertIn("worktree_changed", failure.stdout)
 
     def test_manifestation_requires_at_least_one_concrete_step(self) -> None:
         self.command("init")
@@ -500,6 +594,92 @@ class PipelineCase(unittest.TestCase):
         self.assertEqual(records["F002"]["final_judgment"]["basis"], [modify_basis])
         self.assertEqual(records["F002"]["presented_finding"], modified)
 
+    def test_judgment_uphold_keeps_refutation_replacement(self) -> None:
+        self.command("init")
+        raw = self.finding("reviewer-01:C01")
+        _, adversarial_path = self.write_adversarial([raw])
+        self.command("seal-adversarial", str(adversarial_path))
+
+        dedup_packet_path, dedup_packet = self.one_packet("dedup")
+        dedup_path = Path(dedup_packet["output_path"])
+        canonical = self.finding("F001")
+        write_json(dedup_path, {
+            "schema_version": 3,
+            "stage": "dedup",
+            "task_id": dedup_packet["task_id"],
+            "attempt": dedup_packet["attempt"],
+            "agent_id": dedup_packet["agent_id"],
+            "canonical_candidates": [{
+                "finding": canonical,
+                "source_candidate_ids": ["reviewer-01:C01"],
+                "merge_basis": "The raw candidate maps directly to this finding.",
+            }],
+        })
+        self.command("validate-artifact", str(dedup_packet_path), str(dedup_path))
+        self.command("accept-dedup", "--workers", "1", str(dedup_path))
+
+        refutation_packet_path, refutation_packet = self.one_packet("refutation")
+        refutation_path = Path(refutation_packet["output_path"])
+        replacement = self.finding("F001")
+        replacement["title"] = "Synthetic persistent state can become stale"
+        replacement["impact"] = "A stored value can remain stale after the operation."
+        replacement["manifestation"]["failure"] = (
+            "The reloaded record still contains value 100 instead of the new value 125."
+        )
+        write_json(refutation_path, {
+            "schema_version": 3,
+            "stage": "refutation",
+            "task_id": refutation_packet["task_id"],
+            "attempt": refutation_packet["attempt"],
+            "agent_id": refutation_packet["agent_id"],
+            "results": [{
+                "candidate_id": "F001",
+                "verdict": "modify",
+                "correctness_analysis": "The defect is stale state rather than lost state.",
+                "proportionality_analysis": "A focused refresh fix remains proportionate.",
+                "evidence": [],
+                "replacement_finding": replacement,
+                "residual_uncertainty": "",
+            }],
+        })
+        self.command(
+            "validate-artifact", str(refutation_packet_path), str(refutation_path),
+        )
+        self.command("accept-refutation", "--workers", "1", str(refutation_path))
+
+        judgment_packet_path, judgment_packet = self.one_packet("judgment")
+        judgment_path = Path(judgment_packet["output_path"])
+        write_json(judgment_path, {
+            "schema_version": 3,
+            "stage": "judgment",
+            "task_id": judgment_packet["task_id"],
+            "attempt": judgment_packet["attempt"],
+            "agent_id": judgment_packet["agent_id"],
+            "results": [{
+                "candidate_id": "F001",
+                "verdict": "uphold",
+                "resolved_points": ["The corrected stale-state finding is actionable."],
+                "evidence": [],
+                "final_finding": None,
+                "residual_risk": "",
+            }],
+        })
+        self.command("validate-artifact", str(judgment_packet_path), str(judgment_path))
+        self.command("accept-judgment", str(judgment_path))
+        self.command("finalize")
+        self.command("validate-final")
+
+        final_path = self.run_root / "final" / "final.json"
+        final = json.loads(final_path.read_text(encoding="utf-8"))
+        self.assertEqual(final["findings"], [replacement])
+        self.assertEqual(final["review_records"][0]["presented_finding"], replacement)
+
+        final["findings"] = [canonical]
+        final["review_records"][0]["presented_finding"] = canonical
+        write_json(final_path, final)
+        mismatch = self.command("validate-final", expected_code=2)
+        self.assertIn("judgment_selection_mismatch", mismatch.stdout)
+
     def test_unresolved_candidate_is_structured_and_requires_nonempty_risk(self) -> None:
         self.command("init")
         raw = self.finding("reviewer-01:C01")
@@ -684,6 +864,12 @@ class PipelineCase(unittest.TestCase):
         final["trace"]["raw_candidates"] = 1
         final["trace"]["refutation_results"] = 1
         final["trace"]["final_findings"] = 1
+        state_path = self.run_root / ".pipeline-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["raw_ids"] = ["reviewer-01:C01"]
+        state["canonical_ids"] = ["F999"]
+        state["disputed_ids"] = []
+        write_json(state_path, state)
         write_json(final_path, final)
         failure = self.command("validate-final", expected_code=2)
         self.assertIn("source_line_out_of_range", failure.stdout)

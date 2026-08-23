@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Ultrareview pipeline schemas version 3",
+  "title": "Portable Ultrareview pipeline schemas version 3",
   "oneOf": [
     { "$ref": "#/$defs/scope" },
     { "$ref": "#/$defs/lenses" },
