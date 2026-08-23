@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Portable Ultrareview pipeline schemas version 3",
+  "title": "Portable Ultrareview pipeline schemas version 4",
   "oneOf": [
     { "$ref": "#/$defs/scope" },
     { "$ref": "#/$defs/lenses" },
@@ -15,17 +15,18 @@
     "location": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "start_line", "end_line"],
+      "required": ["path", "start_line", "end_line", "side"],
       "properties": {
         "path": { "type": "string", "minLength": 1 },
         "start_line": { "type": "integer", "minimum": 1 },
-        "end_line": { "type": "integer", "minimum": 1 }
+        "end_line": { "type": "integer", "minimum": 1 },
+        "side": { "enum": ["new", "old"] }
       }
     },
     "evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "statement", "status"],
+      "required": ["kind", "reference", "statement", "status"],
       "properties": {
         "kind": {
           "enum": ["source", "test", "caller", "history", "command", "contract"]
@@ -36,6 +37,7 @@
             { "type": "null" }
           ]
         },
+        "reference": { "type": "string", "minLength": 1 },
         "statement": { "type": "string", "minLength": 1 },
         "status": { "enum": ["verified", "inference"] }
       }
@@ -57,6 +59,52 @@
         "failure": { "type": "string", "minLength": 1 }
       }
     },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "production_reachable",
+        "reachability_path",
+        "inside_authorized_scope",
+        "introduced_by_change",
+        "material_impact",
+        "fix_value",
+        "likely_author_would_fix_now"
+      ],
+      "properties": {
+        "production_reachable": { "enum": ["yes", "no", "unknown"] },
+        "reachability_path": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["location", "reference"],
+            "properties": {
+              "location": { "$ref": "#/$defs/location" },
+              "reference": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "inside_authorized_scope": { "enum": ["yes", "no", "unknown"] },
+        "introduced_by_change": {
+          "enum": ["yes", "no", "not_applicable", "unknown"]
+        },
+        "material_impact": { "enum": ["yes", "no", "unknown"] },
+        "fix_value": { "enum": ["positive", "negative", "unclear"] },
+        "likely_author_would_fix_now": { "enum": ["yes", "no", "unknown"] }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "production_reachable": { "const": "yes" } },
+            "required": ["production_reachable"]
+          },
+          "then": {
+            "properties": { "reachability_path": { "minItems": 1 } }
+          }
+        }
+      ]
+    },
     "finding": {
       "type": "object",
       "additionalProperties": false,
@@ -75,7 +123,7 @@
       ],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
-        "priority": { "enum": ["P0", "P1", "P2", "P3"] },
+        "priority": { "enum": ["P0", "P1", "P2"] },
         "title": { "type": "string", "minLength": 1 },
         "location": { "$ref": "#/$defs/location" },
         "context": { "type": "string", "minLength": 1 },
@@ -173,18 +221,20 @@
         "target",
         "comparison_base",
         "topic",
+        "output_language",
         "exclusions",
         "instruction_files",
         "finding_standard",
         "baseline_worktree_status"
       ],
       "properties": {
-        "schema_version": { "const": 3 },
+        "schema_version": { "const": 4 },
         "repository_path": { "type": "string", "minLength": 1 },
         "review_kind": { "enum": ["change", "topic"] },
         "target": { "type": "string", "minLength": 1 },
         "comparison_base": { "type": ["string", "null"] },
         "topic": { "type": ["string", "null"] },
+        "output_language": { "type": "string", "minLength": 1 },
         "exclusions": {
           "type": "array",
           "items": { "type": "string" }
@@ -243,7 +293,7 @@
       "additionalProperties": false,
       "required": ["schema_version", "reviewers"],
       "properties": {
-        "schema_version": { "const": 3 },
+        "schema_version": { "const": 4 },
         "reviewers": {
           "type": "array",
           "minItems": 1,
@@ -274,7 +324,7 @@
         "no_delegate"
       ],
       "properties": {
-        "schema_version": { "const": 3 },
+        "schema_version": { "const": 4 },
         "stage": {
           "enum": ["adversarial", "dedup", "refutation", "judgment"]
         },
@@ -390,7 +440,7 @@
         "candidates"
       ],
       "properties": {
-        "schema_version": { "const": 3 },
+        "schema_version": { "const": 4 },
         "stage": { "const": "adversarial" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -430,7 +480,7 @@
         "canonical_candidates"
       ],
       "properties": {
-        "schema_version": { "const": 3 },
+        "schema_version": { "const": 4 },
         "stage": { "const": "dedup" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -448,6 +498,7 @@
       "required": [
         "candidate_id",
         "verdict",
+        "qualification",
         "correctness_analysis",
         "proportionality_analysis",
         "evidence",
@@ -457,6 +508,7 @@
       "properties": {
         "candidate_id": { "type": "string", "pattern": "^F[0-9]{3,}$" },
         "verdict": { "enum": ["uphold", "modify", "refute", "unresolved"] },
+        "qualification": { "$ref": "#/$defs/qualification" },
         "correctness_analysis": { "type": "string", "minLength": 1 },
         "proportionality_analysis": { "type": "string", "minLength": 1 },
         "evidence": {
@@ -502,7 +554,7 @@
         "results"
       ],
       "properties": {
-        "schema_version": { "const": 3 },
+        "schema_version": { "const": 4 },
         "stage": { "const": "refutation" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -520,6 +572,7 @@
       "required": [
         "candidate_id",
         "verdict",
+        "qualification",
         "resolved_points",
         "evidence",
         "final_finding",
@@ -528,6 +581,7 @@
       "properties": {
         "candidate_id": { "type": "string", "pattern": "^F[0-9]{3,}$" },
         "verdict": { "enum": ["uphold", "modify", "reject", "unresolved"] },
+        "qualification": { "$ref": "#/$defs/qualification" },
         "resolved_points": {
           "type": "array",
           "minItems": 1,
@@ -587,7 +641,7 @@
         "results"
       ],
       "properties": {
-        "schema_version": { "const": 3 },
+        "schema_version": { "const": 4 },
         "stage": { "const": "judgment" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -654,7 +708,7 @@
       "properties": {
         "finding": { "$ref": "#/$defs/canonical_finding" },
         "refutation_verdict": {
-          "enum": ["modify", "refute", "unresolved"]
+          "enum": ["uphold", "modify", "refute", "unresolved"]
         },
         "judgment_verdict": { "const": "reject" },
         "reason": { "type": "string", "minLength": 1 }
@@ -673,7 +727,7 @@
       "properties": {
         "finding": { "$ref": "#/$defs/canonical_finding" },
         "refutation_verdict": {
-          "enum": ["modify", "refute", "unresolved"]
+          "enum": ["uphold", "modify", "refute", "unresolved"]
         },
         "judgment_verdict": { "const": "unresolved" },
         "resolved_points": {
@@ -689,6 +743,7 @@
       "additionalProperties": false,
       "required": [
         "verdict",
+        "qualification",
         "correctness_analysis",
         "proportionality_analysis",
         "evidence",
@@ -697,6 +752,7 @@
       ],
       "properties": {
         "verdict": { "enum": ["uphold", "modify", "refute", "unresolved"] },
+        "qualification": { "$ref": "#/$defs/qualification" },
         "correctness_analysis": { "type": "string", "minLength": 1 },
         "proportionality_analysis": { "type": "string", "minLength": 1 },
         "evidence": {
@@ -733,10 +789,13 @@
     "final_judgment_record": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source", "verdict", "basis", "evidence", "residual_risk"],
+      "required": [
+        "source", "verdict", "qualification", "basis", "evidence", "residual_risk"
+      ],
       "properties": {
-        "source": { "enum": ["refutation", "judgment"] },
+        "source": { "const": "judgment" },
         "verdict": { "enum": ["uphold", "modify", "reject", "unresolved"] },
+        "qualification": { "$ref": "#/$defs/qualification" },
         "basis": {
           "type": "array",
           "minItems": 1,
@@ -749,15 +808,6 @@
         "residual_risk": { "type": "string" }
       },
       "allOf": [
-        {
-          "if": {
-            "properties": { "source": { "const": "refutation" } },
-            "required": ["source"]
-          },
-          "then": {
-            "properties": { "verdict": { "const": "uphold" } }
-          }
-        },
         {
           "if": {
             "properties": { "verdict": { "const": "unresolved" } },
@@ -803,7 +853,7 @@
         "trace"
       ],
       "properties": {
-        "schema_version": { "const": 3 },
+        "schema_version": { "const": 4 },
         "scope": { "$ref": "#/$defs/scope" },
         "findings": {
           "type": "array",

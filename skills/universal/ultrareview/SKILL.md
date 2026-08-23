@@ -18,7 +18,7 @@ The workflow has exactly one semantic round in each applicable stage:
 1. Independent adversarial review through useful, non-overlapping lenses.
 2. One fresh deduplicator that merges only true duplicates and never decides validity.
 3. Fresh refuters covering every canonical candidate exactly once.
-4. Fresh judges covering every disputed candidate exactly once.
+4. Fresh judges independently deciding every canonical candidate exactly once.
 
 Do not add another review round, extra refuters, extra judges, or a second Ultrareview run automatically. Workers within one stage may run in parallel. The coordinator balances candidate IDs across the selected worker count so the stage still completes in one round.
 
@@ -38,9 +38,11 @@ Create the isolated run directory with the packaged bootstrap rather than writin
 python3 <skill-root>/scripts/bootstrap_run.py --repository <repository-path>
 ```
 
-The bootstrap creates the fixed directory layout outside the repository, records the resolved `--repository` in `repository.json`, and copies `pipeline.py`, the v3 Schema, and stage instruction templates. The orchestrator then writes only the run-specific `scope.json` and `lenses.json` reported by the bootstrap.
+The bootstrap creates the fixed directory layout outside the repository, records the resolved `--repository` in `repository.json`, and copies `pipeline.py`, the v4 Schema, and stage instruction templates. The orchestrator then writes only the run-specific `scope.json` and `lenses.json` reported by the bootstrap.
 
-`scope.json` must precisely define the authorized change or topic, exclusions, applicable instruction files, finding standard, and baseline worktree status. Its absolute `repository_path` must match `repository.json`. Record `baseline_worktree_status` immediately before `init` as the exact output lines from `git -C <repository-path> status --short --untracked-files=all`. `lenses.json` must split the scope into useful lanes without inventing additional scope. Use `schema_version: 3` for both.
+`scope.json` must precisely define the authorized change or topic, output language, exclusions, applicable instruction files, finding standard, and baseline worktree status. Set `output_language` to the language explicitly requested by the user, or otherwise the language of the user's request. Write human-readable scope, lane, and focus text in that language. Its absolute `repository_path` must match `repository.json`. Record `baseline_worktree_status` immediately before `init` as the exact output lines from `git -C <repository-path> status --short --untracked-files=all`. `lenses.json` must split the scope into useful lanes without inventing additional scope. Use `schema_version: 4` for both.
+
+At `init`, the coordinator fixes hashes for `scope.json`, `lenses.json`, `repository.json`, the Schema, stage instructions, and the copied pipeline. Any later change to scope, output language, lenses, or another runtime contract resource invalidates the run; start a newly authorized semantic run instead of editing an active one.
 
 The coordinator rejects Git-visible worktree drift before artifact validation, stage transitions, retries, finalization, and final validation. Treat a mismatch as an incomplete review; report it and do not restore or alter the repository. Use a genuinely read-only filesystem sandbox when the harness offers one because Git status detection does not prevent writes or cover ignored files.
 
@@ -74,13 +76,15 @@ Report a candidate only when all of these are true:
 - The affected scenario or call path can be demonstrated from source, callers, contracts, tests, or verified execution.
 - The author would probably fix it if they knew about it.
 
-Exclude speculative concerns, pre-existing problems, intentional behavior changes, style nits that do not obscure behavior, and remedies whose complexity outweighs their likely value. Continue through the complete assigned scope after finding an issue; do not stop at the first candidate.
+Exclude speculative concerns, pre-existing problems, intentional behavior changes, style nits that do not obscure behavior, dead or unreachable paths, test-only paths outside scope, unsupported configurations, states blocked by existing guards, completed migrations, and remedies whose complexity or maintenance cost outweighs their likely value. Continue through the complete assigned scope after finding an issue; do not stop at the first candidate.
 
-Every finding must include a concrete, intuitive `manifestation` that a human unfamiliar with the call path can follow. Use `verified_reproduction` only when the sequence was actually exercised and the finding includes verified `test` or `command` evidence; otherwise use `reasoned_scenario` and do not imply experimental verification. State the real setup, ordered user/system actions, and the exact visible or observable failure. Do not merely restate the trigger or impact in more words, and do not use placeholders such as “the issue occurs.”
+Refuters and judges must record the v4 `qualification` gate. A result is actionable only when reachability, authorized scope, material impact, fix value, and likely author action all pass, and change reviews also prove introduction by the reviewed diff. A disqualifying value binds to refute/reject; uncertainty binds to unresolved. Uphold and modify require verified reachability evidence from a caller, test, command, or contract. The coordinator rejects artifacts whose verdict contradicts these gates.
 
-For a change review, inspect the complete merge-relevant diff plus enough surrounding source, tests, and callers to show that each finding was introduced by the change. For a base-branch target, resolve its configured upstream when that upstream exists and is ahead of the local branch; otherwise use the local branch, compute `git merge-base HEAD <comparison-ref>`, and review the diff from that merge base. If the local branch cannot be resolved, try its configured upstream explicitly before declaring the target unavailable. Cite a tight line range overlapping the diff. For a topic review, require the issue to fall inside the named scope.
+Every finding must include a concrete, intuitive `manifestation` that a human unfamiliar with the call path can follow. Use `verified_reproduction` only when the sequence was actually exercised and the finding includes verified `test` or `command` evidence; otherwise use `reasoned_scenario` and do not imply experimental verification. State the real setup, ordered user/system actions, and the exact visible or observable failure. Do not merely restate the trigger or impact in more words, and do not use placeholders such as “the issue occurs.” Use `location.side: new` for added or current lines and `location.side: old` for deletion-only lines from the comparison base.
 
-Use `P0` for universal release blockers or critical failures, `P1` for urgent defects, `P2` for ordinary defects worth fixing, and `P3` for useful low-impact defects. Preserve exact evidence and distinguish verified facts from inference.
+For a change review, inspect the complete merge-relevant diff plus enough surrounding source, tests, and callers to show that each finding was introduced by the change. For a base-branch target, resolve its configured upstream when that upstream exists and is ahead of the local branch; otherwise use the local branch, compute `git merge-base HEAD <comparison-ref>`, and store the resulting full immutable commit OID in `scope.comparison_base`. Symbolic refs and short OIDs are rejected. If the local branch cannot be resolved, try its configured upstream explicitly before declaring the target unavailable. Cite a tight line range overlapping the diff. For a topic review, require the issue to fall inside the named scope.
+
+Use `P0` for universal release blockers or critical failures, `P1` for urgent defects, and `P2` for ordinary defects the author is likely to fix now. Do not emit low-impact advisory findings. Preserve exact evidence and distinguish verified facts from inference.
 
 ## Failure handling
 
@@ -90,23 +94,29 @@ An operational retry repairs execution and does not solicit another semantic opi
 
 ## Final verification and response
 
-After `finalize`, run `validate-final`, then read only `final.json`. Inspect the cited source needed to verify that each upheld, rejected, and unresolved item is in scope, cites an existing tight line range, and has a proportionate final disposition. Confirm that every manifestation is concrete and internally consistent and that each `verified_reproduction` is supported by verified test/command evidence. Do not reopen the full debate.
+After `finalize`, run `validate-final`, then read only `final.json`. Inspect the cited source needed to verify that each upheld, rejected, and unresolved item is in scope, cites a tight valid range on the declared current or comparison-base side, and has a proportionate final disposition. Confirm that every manifestation is concrete and internally consistent and that each `verified_reproduction` is supported by verified test/command evidence. Do not reopen the full debate.
+
+Write every part of the response, including headings and stock phrases, in `scope.output_language`. Do not leak fixed English labels into another-language response. Keep only code symbols, paths, commands, identifiers, and priority codes in their original form.
 
 Present upheld findings in priority order using:
 
-`[P1] Clear action-oriented title: path/to/file.ext:line`
+`[P1] <clear action-oriented title>: path/to/file.ext:line`
 
-1. **Context:** Where the code runs and how the issue is reached.
-2. **How it manifests / how to reproduce:** Clearly label it as a verified reproduction or reasoned scenario, then give the setup, numbered steps, and exact failure a person should observe. Prefer concrete names, values, timing, and state transitions over internal shorthand.
-3. **What goes wrong:** The behavior and concrete impact.
-4. **Independent challenge:** Give the strongest concrete reason the finding might be wrong, overstated, unreachable, or not worth the proposed remedy, plus the refuter's verdict. Do not hide an upheld challenge merely because the finding survives.
-5. **Final judgment:** State whether the binding decision came from refutation or judgment, the final verdict, the decisive basis, and the evidence used. Make clear which disputed points were resolved and which uncertainty remains.
-6. **Recommendation:** The smallest proportionate change and focused verification.
+For `location.side: old`, append a short natural-language label in `scope.output_language` saying that the location is from `scope.comparison_base` before deletion. Do not render an old-side path as though it were a current clickable file location. New-side findings need no side label.
+
+Explain each finding at an ELI5 level: use short sentences, everyday cause-and-effect, and enough concrete setup that a person unfamiliar with the code can understand it without tracing the call graph. Avoid unexplained internal shorthand. Choose natural section labels in `scope.output_language` rather than translating or copying a fixed template. Cover these ideas:
+
+1. Where the code runs and how a real user or system reaches it.
+2. A verified reproduction or reasoned scenario with setup, ordered steps, and the exact observable failure.
+3. What the user or system experiences and why it matters.
+4. The judge's decisive basis, the smallest proportionate fix, and a focused verification.
+
+When the refuter verdict is `uphold`, omit the independent-challenge section by default because the independent check agreed with the finding. When the refuter returned `modify`, `refute`, or `unresolved` but the judge retained a finding, include the strongest challenge and explain in plain language how the judge resolved it.
 
 Use the matching `review_records` entry as the audit source for every candidate. Its `case_for` preserves the original positive case, `challenge` preserves the independent counter-analysis and evidence, and `final_judgment` preserves the binding basis and evidence. Do not collapse these into an unsupported one-line conclusion.
 
-Then present every entry from `rejected_findings` in a separate **Rejected/refuted candidates** section. Include its ID, original priority/title/location, the original manifestation/reproduction sequence and claimed impact, the strongest challenge, and the final rejection basis. Make clear that it is not an actionable surviving finding; do not silently omit it.
+Do not expand rejected candidates in the normal response. Report only their count and concise rejection-reason categories in `scope.output_language`; keep their complete audit trail in `final.json`. Expand them only when the user asks.
 
-Then present every entry from `unresolved_findings` with its ID, priority/title/location, manifestation/reproduction sequence, case for, challenge, resolved points, and non-empty residual risk so a human can make the remaining judgment.
+Present unresolved candidates separately from findings, in `scope.output_language`, only when their residual risk is material enough to require a human decision. Explain the known facts, the missing fact, and the decision the human needs to make at the same ELI5 level.
 
-Finally report a short overall assessment, material coverage gaps, trace counts, and the `final.json` path so the structured decision history can be revisited. If no finding survives, say `No findings.` while still presenting rejected candidates, unresolved findings, coverage, and trace counts.
+Finally report a short overall assessment, material coverage gaps, trace counts, and the `final.json` path so the structured decision history can be revisited. If no finding survives, use the natural equivalent of “no actionable findings” in `scope.output_language`; do not emit the English phrase `No findings.` unless English is the requested language.

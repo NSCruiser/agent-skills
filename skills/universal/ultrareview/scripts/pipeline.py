@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Coordinate one harness-independent Ultrareview run using protocol v3."""
+"""Coordinate one harness-independent Ultrareview run using protocol v4."""
 
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -14,7 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 SCOPE_PATH = ROOT / "scope.json"
 LENSES_PATH = ROOT / "lenses.json"
 SCHEMA_PATH = ROOT / "pipeline-schemas.json"
@@ -24,7 +25,7 @@ STATE_PATH = ROOT / ".pipeline-state.json"
 CANONICAL_ID = re.compile(r"^F[0-9]{3,}$")
 RAW_ID = re.compile(r"^[A-Za-z0-9._-]+:C[0-9]{2,}$")
 AGENT_ID = re.compile(r"^[A-Za-z0-9._-]+$")
-PRIORITIES = {"P0", "P1", "P2", "P3"}
+PRIORITIES = {"P0", "P1", "P2"}
 CONFIDENCES = {"high", "medium", "low"}
 EVIDENCE_KINDS = {"source", "test", "caller", "history", "command", "contract"}
 MANIFESTATION_PLACEHOLDERS = {
@@ -72,6 +73,13 @@ def exact_keys(value: object, expected: set[str], stage: str, task_id: str, fiel
 
 def nonempty_string(value: object, stage: str, task_id: str, field: str) -> str:
     require(isinstance(value, str) and bool(value), stage, task_id, "invalid_string", field)
+    return value
+
+
+def enum_string(value: object, allowed: set[str], stage: str,
+                task_id: str, field: str) -> str:
+    require(isinstance(value, str), stage, task_id, "invalid_type", field)
+    require(value in allowed, stage, task_id, "invalid_enum", field)
     return value
 
 
@@ -148,6 +156,61 @@ def git_worktree_status(repository: Path, stage: str, task_id: str) -> list[str]
     return result.stdout.splitlines()
 
 
+def repository_fingerprint(repository: Path, stage: str, task_id: str) -> str:
+    digest = hashlib.sha256()
+    head = subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "--verify", "HEAD"],
+        capture_output=True,
+        check=False,
+    )
+    if head.returncode == 0:
+        digest.update(b"HEAD\0" + head.stdout.strip() + b"\0")
+    else:
+        digest.update(b"HEAD\0UNBORN\0")
+    for label, arguments in (
+        (b"INDEX", ["diff", "--cached", "--binary", "--no-ext-diff"]),
+        (b"WORKTREE", ["diff", "--binary", "--no-ext-diff"]),
+    ):
+        result = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            capture_output=True,
+            check=False,
+        )
+        require(result.returncode == 0, stage, task_id,
+                "repository_fingerprint_unavailable", "$.repository_path")
+        digest.update(label + b"\0" + result.stdout + b"\0")
+    untracked = subprocess.run(
+        ["git", "-C", str(repository), "ls-files", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
+        check=False,
+    )
+    require(untracked.returncode == 0, stage, task_id,
+            "repository_fingerprint_unavailable", "$.repository_path")
+    for raw_path in sorted(item for item in untracked.stdout.split(b"\0") if item):
+        relative = Path(os.fsdecode(raw_path))
+        candidate = (repository / relative).resolve(strict=False)
+        try:
+            candidate.relative_to(repository)
+        except ValueError as exc:
+            raise ValidationError(
+                stage, task_id, "repository_fingerprint_path_escape", [str(relative)]
+            ) from exc
+        digest.update(b"UNTRACKED\0" + raw_path + b"\0")
+        path_without_resolution = repository / relative
+        if path_without_resolution.is_symlink():
+            digest.update(b"SYMLINK\0" + os.fsencode(os.readlink(path_without_resolution)) + b"\0")
+        elif path_without_resolution.is_file():
+            try:
+                digest.update(path_without_resolution.read_bytes())
+            except OSError as exc:
+                raise ValidationError(
+                    stage, task_id, "repository_fingerprint_unavailable", [str(relative)]
+                ) from exc
+        else:
+            digest.update(b"MISSING\0")
+    return digest.hexdigest()
+
+
 def atomic_write(path: Path, value: dict) -> None:
     safe_path(str(path))
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,8 +223,52 @@ def atomic_write(path: Path, value: dict) -> None:
     os.replace(temporary, path)
 
 
+def file_sha256(path: Path, stage: str, task_id: str) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ValidationError(stage, task_id, "artifact_hash_unavailable", [str(path)]) from exc
+
+
+def record_accepted_hashes(state: dict, stage: str, paths: list[str]) -> None:
+    hashes = state.setdefault("accepted_hashes", {}).setdefault(stage, {})
+    for raw_path in paths:
+        path = safe_path(raw_path, must_exist=True, reject_symlink=True)
+        hashes[str(path)] = file_sha256(path, stage, "coordinator")
+
+
+def runtime_contract_hashes(stage: str, task_id: str) -> dict[str, str]:
+    paths = (
+        REPOSITORY_BINDING_PATH,
+        SCOPE_PATH,
+        LENSES_PATH,
+        SCHEMA_PATH,
+        STAGE_INSTRUCTIONS_PATH,
+        ROOT / "pipeline.py",
+    )
+    return {str(path): file_sha256(path, stage, task_id) for path in paths}
+
+
+def require_runtime_contract_unchanged(state: dict, stage: str, task_id: str) -> None:
+    expected = state.get("runtime_contract_hashes")
+    require(isinstance(expected, dict) and bool(expected), stage, task_id,
+            "missing_runtime_contract_hashes", "$.runtime_contract_hashes")
+    current = runtime_contract_hashes(stage, task_id)
+    require(current == expected, stage, task_id,
+            "runtime_contract_changed", "$.runtime_contract_hashes")
+
+
+def require_accepted_artifacts_unchanged(state: dict) -> None:
+    for stage, entries in state.get("accepted_hashes", {}).items():
+        for raw_path, expected_hash in entries.items():
+            path = safe_path(raw_path, must_exist=True, reject_symlink=True)
+            require(file_sha256(path, "finalize", "coordinator") == expected_hash,
+                    "finalize", "coordinator", "accepted_artifact_changed", str(path))
+
+
 def validate_location(value: object, stage: str, task_id: str, field: str) -> None:
-    mapping = exact_keys(value, {"path", "start_line", "end_line"}, stage, task_id, field)
+    mapping = exact_keys(value, {"path", "start_line", "end_line", "side"},
+                         stage, task_id, field)
     nonempty_string(mapping["path"], stage, task_id, f"{field}.path")
     start = mapping["start_line"]
     end = mapping["end_line"]
@@ -169,18 +276,20 @@ def validate_location(value: object, stage: str, task_id: str, field: str) -> No
             stage, task_id, "invalid_line", f"{field}.start_line")
     require(isinstance(end, int) and not isinstance(end, bool) and end >= start,
             stage, task_id, "invalid_line_range", f"{field}.end_line")
+    enum_string(mapping["side"], {"new", "old"}, stage, task_id, f"{field}.side")
 
 
 def validate_evidence(value: object, stage: str, task_id: str, field: str) -> None:
     require(isinstance(value, dict), stage, task_id, "invalid_type", field)
-    required = {"kind", "statement", "status"}
+    required = {"kind", "reference", "statement", "status"}
     allowed = required | {"location"}
     require(required <= set(value), stage, task_id, "missing_required", field)
     require(set(value) <= allowed, stage, task_id, "unknown_fields", field)
-    require(value["kind"] in EVIDENCE_KINDS, stage, task_id, "invalid_enum", f"{field}.kind")
+    enum_string(value["kind"], EVIDENCE_KINDS, stage, task_id, f"{field}.kind")
+    nonempty_string(value["reference"], stage, task_id, f"{field}.reference")
     nonempty_string(value["statement"], stage, task_id, f"{field}.statement")
-    require(value["status"] in {"verified", "inference"}, stage, task_id,
-            "invalid_enum", f"{field}.status")
+    enum_string(value["status"], {"verified", "inference"},
+                stage, task_id, f"{field}.status")
     if "location" in value and value["location"] is not None:
         validate_location(value["location"], stage, task_id, f"{field}.location")
 
@@ -193,8 +302,8 @@ def normalized_manifestation_text(value: str) -> str:
 def validate_manifestation(value: object, stage: str, task_id: str, field: str) -> None:
     mapping = exact_keys(value, {"kind", "setup", "steps", "failure"},
                          stage, task_id, field)
-    require(mapping["kind"] in {"verified_reproduction", "reasoned_scenario"},
-            stage, task_id, "invalid_enum", f"{field}.kind")
+    enum_string(mapping["kind"], {"verified_reproduction", "reasoned_scenario"},
+                stage, task_id, f"{field}.kind")
     setup = nonempty_string(mapping["setup"], stage, task_id, f"{field}.setup")
     normalized_setup = normalized_manifestation_text(setup)
     require(normalized_setup not in MANIFESTATION_PLACEHOLDERS and bool(normalized_setup),
@@ -218,7 +327,7 @@ def validate_finding(value: object, stage: str, task_id: str, field: str, *, raw
     finding_id = nonempty_string(mapping["id"], stage, task_id, f"{field}.id")
     pattern = RAW_ID if raw else CANONICAL_ID
     require(bool(pattern.fullmatch(finding_id)), stage, task_id, "invalid_id", f"{field}.id")
-    require(mapping["priority"] in PRIORITIES, stage, task_id, "invalid_enum", f"{field}.priority")
+    enum_string(mapping["priority"], PRIORITIES, stage, task_id, f"{field}.priority")
     for key in ("title", "context", "trigger", "impact", "recommendation"):
         nonempty_string(mapping[key], stage, task_id, f"{field}.{key}")
     validate_location(mapping["location"], stage, task_id, f"{field}.location")
@@ -236,8 +345,7 @@ def validate_finding(value: object, stage: str, task_id: str, field: str, *, raw
         require(has_verified_execution, stage, task_id,
                 "verified_reproduction_requires_execution_evidence",
                 f"{field}.manifestation.kind")
-    require(mapping["confidence"] in CONFIDENCES, stage, task_id,
-            "invalid_enum", f"{field}.confidence")
+    enum_string(mapping["confidence"], CONFIDENCES, stage, task_id, f"{field}.confidence")
 
 
 def validate_coverage(value: object, stage: str, task_id: str, field: str) -> None:
@@ -249,7 +357,7 @@ def validate_coverage(value: object, stage: str, task_id: str, field: str) -> No
 
 def validate_scope(value: object, stage: str = "init", task_id: str = "scope") -> None:
     keys = {"schema_version", "repository_path", "review_kind", "target", "comparison_base",
-            "topic", "exclusions", "instruction_files", "finding_standard",
+            "topic", "output_language", "exclusions", "instruction_files", "finding_standard",
             "baseline_worktree_status"}
     mapping = exact_keys(value, keys, stage, task_id, "$")
     require(mapping["schema_version"] == SCHEMA_VERSION, stage, task_id,
@@ -260,18 +368,52 @@ def validate_scope(value: object, stage: str = "init", task_id: str = "scope") -
     declared_repository = Path(repository_path)
     require(declared_repository.is_absolute(), stage, task_id, "repository_not_absolute",
             "$.repository_path")
-    require(declared_repository.resolve(strict=False) == load_bound_repository(stage, task_id),
+    bound_repository = load_bound_repository(stage, task_id)
+    require(declared_repository.resolve(strict=False) == bound_repository,
             stage, task_id, "scope_repository_mismatch", "$.repository_path")
-    require(mapping["review_kind"] in {"change", "topic"}, stage, task_id, "invalid_enum", "$.review_kind")
+    enum_string(mapping["review_kind"], {"change", "topic"},
+                stage, task_id, "$.review_kind")
     nonempty_string(mapping["target"], stage, task_id, "$.target")
+    nonempty_string(mapping["output_language"], stage, task_id, "$.output_language")
     if mapping["review_kind"] == "topic":
         require(mapping["comparison_base"] is None, stage, task_id, "invalid_value", "$.comparison_base")
         nonempty_string(mapping["topic"], stage, task_id, "$.topic")
     else:
-        nonempty_string(mapping["comparison_base"], stage, task_id, "$.comparison_base")
+        comparison_base = nonempty_string(
+            mapping["comparison_base"], stage, task_id, "$.comparison_base"
+        )
+        resolved_base = subprocess.run(
+            ["git", "-C", str(bound_repository), "rev-parse", "--verify",
+             f"{comparison_base}^{{commit}}"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(resolved_base.returncode == 0, stage, task_id,
+                "comparison_base_unavailable", "$.comparison_base")
+        require(comparison_base == resolved_base.stdout.strip(), stage, task_id,
+                "comparison_base_not_immutable_oid", "$.comparison_base")
         require(mapping["topic"] is None, stage, task_id, "invalid_value", "$.topic")
     string_list(mapping["exclusions"], stage, task_id, "$.exclusions")
-    string_list(mapping["instruction_files"], stage, task_id, "$.instruction_files", unique=True)
+    instruction_files = string_list(
+        mapping["instruction_files"], stage, task_id, "$.instruction_files", unique=True,
+        nonempty=True,
+    )
+    repository = bound_repository
+    for index, raw_path in enumerate(instruction_files):
+        field = f"$.instruction_files[{index}]"
+        path = Path(raw_path)
+        require(path.is_absolute(), stage, task_id, "instruction_path_not_absolute", field)
+        require(not path.is_symlink(), stage, task_id, "instruction_path_symlink", field)
+        resolved = path.resolve(strict=False)
+        try:
+            resolved.relative_to(repository)
+        except ValueError as exc:
+            raise ValidationError(
+                stage, task_id, "instruction_path_outside_repository", [field]
+            ) from exc
+        require(resolved.is_file() and os.access(resolved, os.R_OK), stage, task_id,
+                "instruction_file_unreadable", field)
     nonempty_string(mapping["finding_standard"], stage, task_id, "$.finding_standard")
     string_list(mapping["baseline_worktree_status"], stage, task_id, "$.baseline_worktree_status")
 
@@ -281,6 +423,17 @@ def require_worktree_unchanged(scope: dict, stage: str, task_id: str) -> None:
     actual = git_worktree_status(repository, stage, task_id)
     require(actual == scope["baseline_worktree_status"], stage, task_id,
             "worktree_changed", "$.baseline_worktree_status")
+    if STATE_PATH.exists():
+        state = load_state()
+        require_runtime_contract_unchanged(state, stage, task_id)
+        expected_fingerprint = nonempty_string(
+            state.get("repository_fingerprint"), stage, task_id,
+            "$.repository_fingerprint",
+        )
+        require(
+            repository_fingerprint(repository, stage, task_id) == expected_fingerprint,
+            stage, task_id, "repository_snapshot_changed", "$.repository_fingerprint",
+        )
 
 
 def validate_lenses(value: object) -> None:
@@ -318,8 +471,8 @@ def validate_packet(value: object, stage: str, task_id: str) -> None:
     mapping = exact_keys(value, keys, stage, task_id, "$")
     require(mapping["schema_version"] == SCHEMA_VERSION, stage, task_id,
             "invalid_version", "$.schema_version")
-    require(mapping["stage"] in {"adversarial", "dedup", "refutation", "judgment"},
-            stage, task_id, "invalid_enum", "$.stage")
+    enum_string(mapping["stage"], {"adversarial", "dedup", "refutation", "judgment"},
+                stage, task_id, "$.stage")
     nonempty_string(mapping["task_id"], stage, task_id, "$.task_id")
     positive_integer(mapping["attempt"], stage, task_id, "$.attempt")
     agent_id = nonempty_string(mapping["agent_id"], stage, task_id, "$.agent_id")
@@ -534,7 +687,100 @@ def validate_dedup(packet: dict, value: object, raw_ids: set[str]) -> None:
             "$.canonical_candidates[*].source_candidate_ids")
 
 
-def validate_refutation(packet: dict, value: object) -> None:
+def validate_qualification(value: object, review_kind: str,
+                           stage: str, task_id: str, field: str) -> str:
+    row = exact_keys(
+        value,
+        {
+            "production_reachable", "reachability_path", "inside_authorized_scope",
+            "introduced_by_change", "material_impact", "fix_value",
+            "likely_author_would_fix_now",
+        },
+        stage,
+        task_id,
+        field,
+    )
+    ternary_fields = (
+        "production_reachable", "inside_authorized_scope", "material_impact",
+        "likely_author_would_fix_now",
+    )
+    for key in ternary_fields:
+        enum_string(row[key], {"yes", "no", "unknown"},
+                    stage, task_id, f"{field}.{key}")
+    reachability_path = row["reachability_path"]
+    require(isinstance(reachability_path, list), stage, task_id,
+            "invalid_type", f"{field}.reachability_path")
+    for index, step in enumerate(reachability_path):
+        step_field = f"{field}.reachability_path[{index}]"
+        step_row = exact_keys(step, {"location", "reference"},
+                              stage, task_id, step_field)
+        validate_location(step_row["location"], stage, task_id, f"{step_field}.location")
+        nonempty_string(step_row["reference"], stage, task_id, f"{step_field}.reference")
+    if row["production_reachable"] == "yes":
+        require(bool(reachability_path), stage, task_id,
+                "missing_reachability_path", f"{field}.reachability_path")
+    enum_string(row["introduced_by_change"], {"yes", "no", "not_applicable", "unknown"},
+                stage, task_id, f"{field}.introduced_by_change")
+    if review_kind == "change":
+        require(row["introduced_by_change"] != "not_applicable", stage, task_id,
+                "qualification_scope_mismatch", f"{field}.introduced_by_change")
+    else:
+        require(row["introduced_by_change"] == "not_applicable", stage, task_id,
+                "qualification_scope_mismatch", f"{field}.introduced_by_change")
+    enum_string(row["fix_value"], {"positive", "negative", "unclear"},
+                stage, task_id, f"{field}.fix_value")
+
+    disqualified = (
+        row["production_reachable"] == "no"
+        or row["inside_authorized_scope"] == "no"
+        or row["introduced_by_change"] == "no"
+        or row["material_impact"] == "no"
+        or row["fix_value"] == "negative"
+        or row["likely_author_would_fix_now"] == "no"
+    )
+    if disqualified:
+        return "reject"
+    uncertain = (
+        row["production_reachable"] == "unknown"
+        or row["inside_authorized_scope"] == "unknown"
+        or row["introduced_by_change"] == "unknown"
+        or row["material_impact"] == "unknown"
+        or row["fix_value"] == "unclear"
+        or row["likely_author_would_fix_now"] == "unknown"
+    )
+    return "unresolved" if uncertain else "qualify"
+
+
+def validate_qualification_verdict(disposition: str, verdict: str, *, judgment: bool,
+                                   stage: str, task_id: str, field: str) -> None:
+    expected = (
+        {"uphold", "modify"}
+        if disposition == "qualify"
+        else {"reject" if judgment else "refute"}
+        if disposition == "reject"
+        else {"unresolved"}
+    )
+    require(verdict in expected, stage, task_id,
+            "qualification_verdict_mismatch", field)
+
+
+def validate_qualifying_evidence(evidence: list[dict], disposition: str,
+                                 stage: str, task_id: str, field: str) -> None:
+    if disposition != "qualify":
+        return
+    has_reachability_evidence = False
+    for item in evidence:
+        if item["status"] != "verified":
+            continue
+        if item["kind"] in {"caller", "contract"} and item.get("location") is not None:
+            has_reachability_evidence = True
+        elif item["kind"] in {"test", "command"}:
+            has_reachability_evidence = True
+    require(has_reachability_evidence, stage, task_id,
+            "qualifying_result_requires_verified_reachability_evidence", field)
+
+
+def validate_refutation(packet: dict, value: object, scope: dict) -> None:
     stage = "refutation"
     task_id = packet["task_id"]
     keys = {"schema_version", "stage", "task_id", "attempt", "agent_id", "results"}
@@ -551,21 +797,32 @@ def validate_refutation(packet: dict, value: object) -> None:
     ids: list[str] = []
     for index, result in enumerate(results):
         field = f"$.results[{index}]"
-        row = exact_keys(result, {"candidate_id", "verdict", "correctness_analysis",
-                         "proportionality_analysis", "evidence", "replacement_finding",
-                         "residual_uncertainty"}, stage, task_id, field)
+        row = exact_keys(result, {"candidate_id", "verdict", "qualification",
+                         "correctness_analysis", "proportionality_analysis", "evidence",
+                         "replacement_finding", "residual_uncertainty"}, stage, task_id, field)
         candidate_id = nonempty_string(row["candidate_id"], stage, task_id, f"{field}.candidate_id")
         require(bool(CANONICAL_ID.fullmatch(candidate_id)), stage, task_id,
                 "invalid_id", f"{field}.candidate_id")
         ids.append(candidate_id)
-        require(row["verdict"] in {"uphold", "modify", "refute", "unresolved"},
-                stage, task_id, "invalid_enum", f"{field}.verdict")
+        enum_string(row["verdict"], {"uphold", "modify", "refute", "unresolved"},
+                    stage, task_id, f"{field}.verdict")
+        disposition = validate_qualification(
+            row["qualification"], scope["review_kind"], stage, task_id,
+            f"{field}.qualification",
+        )
+        validate_qualification_verdict(
+            disposition, row["verdict"], judgment=False,
+            stage=stage, task_id=task_id, field=f"{field}.verdict",
+        )
         nonempty_string(row["correctness_analysis"], stage, task_id, f"{field}.correctness_analysis")
         nonempty_string(row["proportionality_analysis"], stage, task_id,
                         f"{field}.proportionality_analysis")
         require(isinstance(row["evidence"], list), stage, task_id, "invalid_type", f"{field}.evidence")
         for evidence_index, evidence in enumerate(row["evidence"]):
             validate_evidence(evidence, stage, task_id, f"{field}.evidence[{evidence_index}]")
+        validate_qualifying_evidence(
+            row["evidence"], disposition, stage, task_id, f"{field}.evidence"
+        )
         require(isinstance(row["residual_uncertainty"], str), stage, task_id,
                 "invalid_string", f"{field}.residual_uncertainty")
         if row["verdict"] == "modify":
@@ -581,7 +838,7 @@ def validate_refutation(packet: dict, value: object) -> None:
             "assignment_coverage", "$.results[*].candidate_id")
 
 
-def validate_judgment(packet: dict, value: object) -> None:
+def validate_judgment(packet: dict, value: object, scope: dict) -> None:
     stage = "judgment"
     task_id = packet["task_id"]
     keys = {"schema_version", "stage", "task_id", "attempt", "agent_id", "results"}
@@ -598,14 +855,23 @@ def validate_judgment(packet: dict, value: object) -> None:
     ids: list[str] = []
     for index, result in enumerate(results):
         field = f"$.results[{index}]"
-        row = exact_keys(result, {"candidate_id", "verdict", "resolved_points", "evidence",
-                         "final_finding", "residual_risk"}, stage, task_id, field)
+        row = exact_keys(result, {"candidate_id", "verdict", "qualification",
+                         "resolved_points", "evidence", "final_finding", "residual_risk"},
+                         stage, task_id, field)
         candidate_id = nonempty_string(row["candidate_id"], stage, task_id, f"{field}.candidate_id")
         require(bool(CANONICAL_ID.fullmatch(candidate_id)), stage, task_id,
                 "invalid_id", f"{field}.candidate_id")
         ids.append(candidate_id)
-        require(row["verdict"] in {"uphold", "modify", "reject", "unresolved"},
-                stage, task_id, "invalid_enum", f"{field}.verdict")
+        enum_string(row["verdict"], {"uphold", "modify", "reject", "unresolved"},
+                    stage, task_id, f"{field}.verdict")
+        disposition = validate_qualification(
+            row["qualification"], scope["review_kind"], stage, task_id,
+            f"{field}.qualification",
+        )
+        validate_qualification_verdict(
+            disposition, row["verdict"], judgment=True,
+            stage=stage, task_id=task_id, field=f"{field}.verdict",
+        )
         resolved_points = string_list(
             row["resolved_points"], stage, task_id, f"{field}.resolved_points", nonempty=True
         )
@@ -614,6 +880,9 @@ def validate_judgment(packet: dict, value: object) -> None:
         require(isinstance(row["evidence"], list), stage, task_id, "invalid_type", f"{field}.evidence")
         for evidence_index, evidence in enumerate(row["evidence"]):
             validate_evidence(evidence, stage, task_id, f"{field}.evidence[{evidence_index}]")
+        validate_qualifying_evidence(
+            row["evidence"], disposition, stage, task_id, f"{field}.evidence"
+        )
         require(isinstance(row["residual_risk"], str), stage, task_id,
                 "invalid_string", f"{field}.residual_risk")
         if row["verdict"] == "unresolved":
@@ -631,20 +900,28 @@ def validate_judgment(packet: dict, value: object) -> None:
             "assignment_coverage", "$.results[*].candidate_id")
 
 
-def validate_challenge_record(value: object, candidate_id: str,
+def validate_challenge_record(value: object, candidate_id: str, scope: dict,
                               stage: str, task_id: str, field: str) -> dict:
     row = exact_keys(
         value,
         {
-            "verdict", "correctness_analysis", "proportionality_analysis",
+            "verdict", "qualification", "correctness_analysis", "proportionality_analysis",
             "evidence", "proposed_finding", "residual_uncertainty",
         },
         stage,
         task_id,
         field,
     )
-    require(row["verdict"] in {"uphold", "modify", "refute", "unresolved"},
-            stage, task_id, "invalid_enum", f"{field}.verdict")
+    enum_string(row["verdict"], {"uphold", "modify", "refute", "unresolved"},
+                stage, task_id, f"{field}.verdict")
+    disposition = validate_qualification(
+        row["qualification"], scope["review_kind"], stage, task_id,
+        f"{field}.qualification",
+    )
+    validate_qualification_verdict(
+        disposition, row["verdict"], judgment=False,
+        stage=stage, task_id=task_id, field=f"{field}.verdict",
+    )
     nonempty_string(row["correctness_analysis"], stage, task_id,
                     f"{field}.correctness_analysis")
     nonempty_string(row["proportionality_analysis"], stage, task_id,
@@ -653,6 +930,8 @@ def validate_challenge_record(value: object, candidate_id: str,
             "invalid_type", f"{field}.evidence")
     for index, evidence in enumerate(row["evidence"]):
         validate_evidence(evidence, stage, task_id, f"{field}.evidence[{index}]")
+    validate_qualifying_evidence(row["evidence"], disposition, stage, task_id,
+                                 f"{field}.evidence")
     require(isinstance(row["residual_uncertainty"], str), stage, task_id,
             "invalid_string", f"{field}.residual_uncertainty")
     if row["verdict"] == "modify":
@@ -666,42 +945,35 @@ def validate_challenge_record(value: object, candidate_id: str,
     return row
 
 
-def validate_final_judgment_record(value: object, challenge: dict,
+def validate_final_judgment_record(value: object, scope: dict,
                                    stage: str, task_id: str, field: str) -> dict:
-    row = exact_keys(value, {"source", "verdict", "basis", "evidence", "residual_risk"},
+    row = exact_keys(value, {"source", "verdict", "qualification", "basis", "evidence",
+                                  "residual_risk"},
                      stage, task_id, field)
-    require(row["source"] in {"refutation", "judgment"}, stage, task_id,
-            "invalid_enum", f"{field}.source")
-    require(row["verdict"] in {"uphold", "modify", "reject", "unresolved"},
-            stage, task_id, "invalid_enum", f"{field}.verdict")
+    require(row["source"] == "judgment", stage, task_id,
+            "invalid_judgment_source", f"{field}.source")
+    enum_string(row["verdict"], {"uphold", "modify", "reject", "unresolved"},
+                stage, task_id, f"{field}.verdict")
+    disposition = validate_qualification(
+        row["qualification"], scope["review_kind"], stage, task_id,
+        f"{field}.qualification",
+    )
+    validate_qualification_verdict(
+        disposition, row["verdict"], judgment=True,
+        stage=stage, task_id=task_id, field=f"{field}.verdict",
+    )
     basis = string_list(row["basis"], stage, task_id, f"{field}.basis", nonempty=True)
     require(bool(basis), stage, task_id, "invalid_array", f"{field}.basis")
     require(isinstance(row["evidence"], list), stage, task_id,
             "invalid_type", f"{field}.evidence")
     for index, evidence in enumerate(row["evidence"]):
         validate_evidence(evidence, stage, task_id, f"{field}.evidence[{index}]")
+    validate_qualifying_evidence(row["evidence"], disposition, stage, task_id,
+                                 f"{field}.evidence")
     require(isinstance(row["residual_risk"], str), stage, task_id,
             "invalid_string", f"{field}.residual_risk")
     if row["verdict"] == "unresolved":
         nonempty_string(row["residual_risk"], stage, task_id, f"{field}.residual_risk")
-    if row["source"] == "refutation":
-        require(challenge["verdict"] == "uphold" and row["verdict"] == "uphold",
-                stage, task_id, "invalid_judgment_source", field)
-        require(
-            row["basis"] == [
-                challenge["correctness_analysis"],
-                challenge["proportionality_analysis"],
-            ]
-            and row["evidence"] == challenge["evidence"]
-            and row["residual_risk"] == challenge["residual_uncertainty"],
-            stage,
-            task_id,
-            "refutation_judgment_mismatch",
-            field,
-        )
-    else:
-        require(challenge["verdict"] != "uphold", stage, task_id,
-                "invalid_judgment_source", field)
     return row
 
 
@@ -733,7 +1005,7 @@ def validate_final_payload(value: object, expected_scope: dict,
         finding_ids.append(finding["id"])
     require(len(finding_ids) == len(set(finding_ids)), stage, task_id,
             "duplicate_canonical_id", "$.findings")
-    priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    priority_order = {"P0": 0, "P1": 1, "P2": 2}
     expected_order = sorted(
         findings,
         key=lambda item: (priority_order[item["priority"]], item["id"]),
@@ -756,8 +1028,8 @@ def validate_final_payload(value: object, expected_scope: dict,
         )
         validate_finding(row["finding"], stage, task_id, f"{field}.finding", raw=False)
         rejected_ids.append(row["finding"]["id"])
-        require(row["refutation_verdict"] in {"modify", "refute", "unresolved"},
-                stage, task_id, "invalid_enum", f"{field}.refutation_verdict")
+        enum_string(row["refutation_verdict"], {"uphold", "modify", "refute", "unresolved"},
+                    stage, task_id, f"{field}.refutation_verdict")
         require(row["judgment_verdict"] == "reject", stage, task_id,
                 "invalid_enum", f"{field}.judgment_verdict")
         nonempty_string(row["reason"], stage, task_id, f"{field}.reason")
@@ -793,8 +1065,8 @@ def validate_final_payload(value: object, expected_scope: dict,
         )
         validate_finding(row["finding"], stage, task_id, f"{field}.finding", raw=False)
         unresolved_ids.append(row["finding"]["id"])
-        require(row["refutation_verdict"] in {"modify", "refute", "unresolved"},
-                stage, task_id, "invalid_enum", f"{field}.refutation_verdict")
+        enum_string(row["refutation_verdict"], {"uphold", "modify", "refute", "unresolved"},
+                    stage, task_id, f"{field}.refutation_verdict")
         require(row["judgment_verdict"] == "unresolved", stage, task_id,
                 "invalid_enum", f"{field}.judgment_verdict")
         resolved_points = string_list(
@@ -845,10 +1117,11 @@ def validate_final_payload(value: object, expected_scope: dict,
         require(row["case_for"]["id"] == candidate_id, stage, task_id,
                 "review_record_id_mismatch", f"{field}.case_for.id")
         challenge = validate_challenge_record(
-            row["challenge"], candidate_id, stage, task_id, f"{field}.challenge"
+            row["challenge"], candidate_id, expected_scope,
+            stage, task_id, f"{field}.challenge"
         )
         final_judgment = validate_final_judgment_record(
-            row["final_judgment"], challenge,
+            row["final_judgment"], expected_scope,
             stage, task_id, f"{field}.final_judgment",
         )
         validate_finding(row["presented_finding"], stage, task_id,
@@ -928,14 +1201,16 @@ def artifact_record_count(stage: str, artifact: dict) -> int:
 
 def validate_packet_artifact(packet: dict, artifact: dict, state: dict) -> None:
     stage = packet["stage"]
+    scope = read_json(SCOPE_PATH, stage, packet["task_id"])
+    validate_scope(scope, stage, packet["task_id"])
     if stage == "adversarial":
         validate_adversarial(packet, artifact)
     elif stage == "dedup":
         validate_dedup(packet, artifact, set(state.get("raw_ids", [])))
     elif stage == "refutation":
-        validate_refutation(packet, artifact)
+        validate_refutation(packet, artifact, scope)
     else:
-        validate_judgment(packet, artifact)
+        validate_judgment(packet, artifact, scope)
 
 
 def require_current_packet(state: dict, packet_path: Path, packet: dict) -> None:
@@ -1030,7 +1305,16 @@ def command_init() -> None:
     validate_scope(scope)
     validate_lenses(lenses)
     require_worktree_unchanged(scope, "init", "scope")
-    state = {"phase": "adversarial", "current_packets": {}, "accepted": {}}
+    state = {
+        "phase": "adversarial",
+        "current_packets": {},
+        "accepted": {},
+        "accepted_hashes": {},
+        "runtime_contract_hashes": runtime_contract_hashes("init", "scope"),
+        "repository_fingerprint": repository_fingerprint(
+            load_bound_repository("init", "scope"), "init", "scope"
+        ),
+    }
     for reviewer in lenses["reviewers"]:
         instructions = [
             item.format(lane=reviewer["lane"])
@@ -1065,6 +1349,7 @@ def command_seal_adversarial(raw_paths: list[str]) -> None:
     require(len(all_ids) == len(set(all_ids)), "adversarial", "coordinator",
             "duplicate_candidate_id", "$.candidates")
     state["accepted"]["adversarial"] = [path for _, _, path in rows]
+    record_accepted_hashes(state, "adversarial", state["accepted"]["adversarial"])
     state["current_packets"]["adversarial"] = []
     state["raw_ids"] = all_ids
     if not all_ids:
@@ -1100,6 +1385,7 @@ def command_accept_dedup(raw_path: str, worker_count: int) -> None:
     validate_dedup(packet, artifact, set(state["raw_ids"]))
     canonical_ids = [row["finding"]["id"] for row in artifact["canonical_candidates"]]
     state["accepted"]["dedup"] = path
+    record_accepted_hashes(state, "dedup", [path])
     state["current_packets"]["dedup"] = []
     state["canonical_ids"] = canonical_ids
     groups = partition(canonical_ids, min(worker_count, len(canonical_ids)))
@@ -1130,26 +1416,19 @@ def command_accept_refutation(raw_paths: list[str], worker_count: int) -> None:
     require_worktree_unchanged(scope, "refutation", "coordinator")
     rows = match_artifact_paths(state, "refutation", raw_paths)
     covered: list[str] = []
-    disputed: list[str] = []
     for packet, artifact, _ in rows:
-        validate_refutation(packet, artifact)
+        validate_refutation(packet, artifact, scope)
         for result in artifact["results"]:
             covered.append(result["candidate_id"])
-            if result["verdict"] != "uphold":
-                disputed.append(result["candidate_id"])
     require(len(covered) == len(set(covered)), "refutation", "coordinator",
             "duplicate_candidate_id", "$.results")
     require(set(covered) == set(state["canonical_ids"]), "refutation", "coordinator",
             "assignment_coverage", "$.results[*].candidate_id")
     state["accepted"]["refutation"] = [path for _, _, path in rows]
+    record_accepted_hashes(state, "refutation", state["accepted"]["refutation"])
     state["current_packets"]["refutation"] = []
-    state["disputed_ids"] = disputed
-    if not disputed:
-        state["phase"] = "ready_finalize"
-        save_state(state)
-        print(f"STAGE_ACCEPTED refutation {len(covered)} 0")
-        return
-    groups = partition(disputed, min(worker_count, len(disputed)))
+    state["judgment_ids"] = covered
+    groups = partition(covered, min(worker_count, len(covered)))
     judgment_inputs = [state["accepted"]["dedup"]] + state["accepted"]["refutation"]
     stage_instructions = load_stage_instructions()
     for index, assigned in enumerate(groups, start=1):
@@ -1166,7 +1445,7 @@ def command_accept_refutation(raw_paths: list[str], worker_count: int) -> None:
         print(f"PACKET_CREATED judgment {task_id} {packet_path} {output_path}")
     state["phase"] = "judgment"
     save_state(state)
-    print(f"STAGE_ACCEPTED refutation {len(covered)} {len(disputed)}")
+    print(f"STAGE_ACCEPTED refutation {len(covered)} {len(covered)}")
 
 
 def command_accept_judgment(raw_paths: list[str]) -> None:
@@ -1179,13 +1458,14 @@ def command_accept_judgment(raw_paths: list[str]) -> None:
     rows = match_artifact_paths(state, "judgment", raw_paths)
     covered: list[str] = []
     for packet, artifact, _ in rows:
-        validate_judgment(packet, artifact)
+        validate_judgment(packet, artifact, scope)
         covered.extend(result["candidate_id"] for result in artifact["results"])
     require(len(covered) == len(set(covered)), "judgment", "coordinator",
             "duplicate_candidate_id", "$.results")
-    require(set(covered) == set(state["disputed_ids"]), "judgment", "coordinator",
+    require(set(covered) == set(state["judgment_ids"]), "judgment", "coordinator",
             "assignment_coverage", "$.results[*].candidate_id")
     state["accepted"]["judgment"] = [path for _, _, path in rows]
+    record_accepted_hashes(state, "judgment", state["accepted"]["judgment"])
     state["current_packets"]["judgment"] = []
     state["phase"] = "ready_finalize"
     save_state(state)
@@ -1214,23 +1494,12 @@ def expected_trace_from_state(state: dict) -> dict[str, int]:
         "raw_candidates": len(state.get("raw_ids", [])),
         "canonical_candidates": len(state.get("canonical_ids", [])),
         "refutation_results": len(state.get("canonical_ids", [])),
-        "judgment_results": len(state.get("disputed_ids", [])),
+        "judgment_results": len(state.get("judgment_ids", [])),
     }
 
 
-def command_finalize() -> None:
-    state = load_state()
-    require(state.get("phase") in {"ready_finalize", "ready_finalize_empty", "finalized"},
-            "finalize", "coordinator", "invalid_phase", "$.phase")
-    scope = read_json(SCOPE_PATH, "finalize", "coordinator")
-    validate_scope(scope, "finalize", "coordinator")
-    require_worktree_unchanged(scope, "finalize", "coordinator")
-    final_path = ROOT / "final" / "final.json"
-    if state.get("phase") == "finalized":
-        final = read_json(final_path, "finalize", "final")
-        trace = final["trace"]
-        print("FINALIZED", final_path, *(f"{key}={value}" for key, value in trace.items()))
-        return
+def assemble_final_payload(state: dict, scope: dict) -> dict:
+    require_accepted_artifacts_unchanged(state)
     findings: list[dict] = []
     rejected_findings: list[dict] = []
     unresolved_findings: list[dict] = []
@@ -1240,7 +1509,7 @@ def command_finalize() -> None:
     canonical_count = len(state.get("canonical_ids", []))
     refutation_count = 0
     judgment_count = 0
-    if state["phase"] != "ready_finalize_empty":
+    if canonical_count:
         dedup = read_json(Path(state["accepted"]["dedup"]), "finalize", "dedup")
         canonical = {row["finding"]["id"]: row["finding"] for row in dedup["canonical_candidates"]}
         refutations: dict[str, dict] = {}
@@ -1260,72 +1529,59 @@ def command_finalize() -> None:
             refutation = refutations[candidate_id]
             challenge = {
                 "verdict": refutation["verdict"],
+                "qualification": refutation["qualification"],
                 "correctness_analysis": refutation["correctness_analysis"],
                 "proportionality_analysis": refutation["proportionality_analysis"],
                 "evidence": refutation["evidence"],
                 "proposed_finding": refutation["replacement_finding"],
                 "residual_uncertainty": refutation["residual_uncertainty"],
             }
-            if refutation["verdict"] == "uphold":
-                presented_finding = case_for
+            finding_under_judgment = (
+                refutation["replacement_finding"]
+                if refutation["verdict"] == "modify"
+                else case_for
+            )
+            judgment = judgments[candidate_id]
+            if judgment["verdict"] == "uphold":
+                presented_finding = finding_under_judgment
                 findings.append(presented_finding)
-                final_judgment = {
-                    "source": "refutation",
-                    "verdict": "uphold",
-                    "basis": [
-                        refutation["correctness_analysis"],
-                        refutation["proportionality_analysis"],
-                    ],
-                    "evidence": refutation["evidence"],
-                    "residual_risk": refutation["residual_uncertainty"],
-                }
+            elif judgment["verdict"] == "modify":
+                presented_finding = judgment["final_finding"]
+                findings.append(presented_finding)
+            elif judgment["verdict"] == "reject":
+                presented_finding = finding_under_judgment
+                rejected += 1
+                rejected_findings.append({
+                    "finding": presented_finding,
+                    "refutation_verdict": refutation["verdict"],
+                    "judgment_verdict": "reject",
+                    "reason": " ".join(judgment["resolved_points"]),
+                })
             else:
-                disputed_finding = (
-                    refutation["replacement_finding"]
-                    if refutation["verdict"] == "modify"
-                    else case_for
-                )
-                judgment = judgments[candidate_id]
-                if judgment["verdict"] == "uphold":
-                    presented_finding = disputed_finding
-                    findings.append(presented_finding)
-                elif judgment["verdict"] == "modify":
-                    presented_finding = judgment["final_finding"]
-                    findings.append(presented_finding)
-                elif judgment["verdict"] == "reject":
-                    presented_finding = disputed_finding
-                    rejected += 1
-                    rejected_findings.append({
-                        "finding": presented_finding,
-                        "refutation_verdict": refutation["verdict"],
-                        "judgment_verdict": "reject",
-                        "reason": " ".join(judgment["resolved_points"]),
-                    })
-                else:
-                    presented_finding = disputed_finding
-                    unresolved += 1
-                    unresolved_findings.append({
-                        "finding": presented_finding,
-                        "refutation_verdict": refutation["verdict"],
-                        "judgment_verdict": "unresolved",
-                        "resolved_points": judgment["resolved_points"],
-                        "residual_risk": judgment["residual_risk"],
-                    })
-                final_judgment = {
-                    "source": "judgment",
-                    "verdict": judgment["verdict"],
-                    "basis": judgment["resolved_points"],
-                    "evidence": judgment["evidence"],
+                presented_finding = finding_under_judgment
+                unresolved += 1
+                unresolved_findings.append({
+                    "finding": presented_finding,
+                    "refutation_verdict": refutation["verdict"],
+                    "judgment_verdict": "unresolved",
+                    "resolved_points": judgment["resolved_points"],
                     "residual_risk": judgment["residual_risk"],
-                }
+                })
             review_records.append({
                 "candidate_id": candidate_id,
                 "case_for": case_for,
                 "challenge": challenge,
-                "final_judgment": final_judgment,
+                "final_judgment": {
+                    "source": "judgment",
+                    "verdict": judgment["verdict"],
+                    "qualification": judgment["qualification"],
+                    "basis": judgment["resolved_points"],
+                    "evidence": judgment["evidence"],
+                    "residual_risk": judgment["residual_risk"],
+                },
                 "presented_finding": presented_finding,
             })
-    priority_order = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+    priority_order = {"P0": 0, "P1": 1, "P2": 2}
     findings.sort(key=lambda item: (priority_order[item["priority"]], item["id"]))
     rejected_findings.sort(
         key=lambda item: (
@@ -1363,6 +1619,26 @@ def command_finalize() -> None:
         "trace": trace,
     }
     validate_final_payload(final, scope, expected_trace_from_state(state))
+    return final
+
+
+def command_finalize() -> None:
+    state = load_state()
+    phase = enum_string(
+        state.get("phase"), {"ready_finalize", "ready_finalize_empty", "finalized"},
+        "finalize", "coordinator", "$.phase",
+    )
+    scope = read_json(SCOPE_PATH, "finalize", "coordinator")
+    validate_scope(scope, "finalize", "coordinator")
+    require_worktree_unchanged(scope, "finalize", "coordinator")
+    final_path = ROOT / "final" / "final.json"
+    if phase == "finalized":
+        final = read_json(final_path, "finalize", "final")
+        trace = final["trace"]
+        print("FINALIZED", final_path, *(f"{key}={value}" for key, value in trace.items()))
+        return
+    final = assemble_final_payload(state, scope)
+    trace = final["trace"]
     atomic_write(final_path, final)
     state["phase"] = "finalized"
     save_state(state)
@@ -1403,6 +1679,7 @@ def command_retry_packet(raw_packet_path: str) -> None:
 
 def command_status() -> None:
     state = load_state()
+    require_runtime_contract_unchanged(state, "status", "coordinator")
     phase = nonempty_string(state.get("phase"), "status", "coordinator", "$.phase")
     print(f"STATUS {phase}")
     stage = phase if phase in {"adversarial", "dedup", "refutation", "judgment"} else None
@@ -1416,7 +1693,7 @@ def command_status() -> None:
         print(f"FINAL {ROOT / 'final' / 'final.json'}")
 
 
-def source_path(scope: dict, location: dict, field: str) -> Path:
+def repository_location(scope: dict, location: dict, field: str) -> tuple[Path, Path, Path]:
     stage = "validate-final"
     task_id = "final"
     repository = load_bound_repository(stage, task_id)
@@ -1428,8 +1705,79 @@ def source_path(scope: dict, location: dict, field: str) -> Path:
         candidate.relative_to(repository)
     except ValueError as exc:
         raise ValidationError(stage, task_id, "source_path_outside_repository", [field]) from exc
-    require(candidate.is_file(), stage, task_id, "source_path_missing", field)
-    return candidate
+    relative_path = candidate.relative_to(repository)
+    return repository, relative_path, candidate
+
+
+def location_line_count(scope: dict, location: dict, field: str) -> int:
+    stage = "validate-final"
+    task_id = "final"
+    repository, relative_path, candidate = repository_location(scope, location, field)
+    if location["side"] == "new":
+        require(candidate.is_file(), stage, task_id, "source_path_missing", field)
+        with candidate.open("r", encoding="utf-8", errors="replace") as handle:
+            return sum(1 for _ in handle)
+    require(scope["review_kind"] == "change", stage, task_id,
+            "old_location_requires_change_review", f"{field}.side")
+    result = subprocess.run(
+        ["git", "-C", str(repository), "show",
+         f"{scope['comparison_base']}:{relative_path.as_posix()}"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    require(result.returncode == 0, stage, task_id, "source_path_missing", field)
+    return len(result.stdout.splitlines())
+
+
+def parse_changed_line_ranges(diff_text: str, side: str) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    pattern = re.compile(
+        r"^@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@"
+    )
+    for line in diff_text.splitlines():
+        match = pattern.match(line)
+        if match is None:
+            continue
+        offset = 1 if side == "old" else 3
+        start = int(match.group(offset))
+        count = int(match.group(offset + 1) or "1")
+        if count > 0:
+            ranges.append((start, start + count - 1))
+    return ranges
+
+
+def require_location_overlaps_change(scope: dict, finding: dict, field: str) -> None:
+    if scope["review_kind"] != "change":
+        return
+    stage = "validate-final"
+    task_id = "final"
+    location = finding["location"]
+    repository, relative_path, _ = repository_location(scope, location, field)
+    try:
+        result = subprocess.run(
+            [
+                "git", "-C", str(repository), "diff", "--unified=0", "--no-color",
+                "--no-ext-diff", scope["comparison_base"], "--", str(relative_path),
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise ValidationError(
+            stage, task_id, "change_diff_unavailable", [field]
+        ) from exc
+    require(result.returncode == 0, stage, task_id, "change_diff_unavailable", field)
+    start = finding["location"]["start_line"]
+    end = finding["location"]["end_line"]
+    overlaps = any(
+        start <= changed_end and end >= changed_start
+        for changed_start, changed_end in parse_changed_line_ranges(
+            result.stdout, location["side"]
+        )
+    )
+    require(overlaps, stage, task_id, "location_not_in_reviewed_change", field)
 
 
 def command_validate_final() -> None:
@@ -1442,6 +1790,9 @@ def command_validate_final() -> None:
     require(state.get("phase") == "finalized", "validate-final", "final",
             "invalid_phase", "$.phase")
     validate_final_payload(final, expected_scope, expected_trace_from_state(state))
+    expected_final = assemble_final_payload(state, expected_scope)
+    require(final == expected_final, "validate-final", "final",
+            "final_payload_mismatch", "$")
     located_findings = [
         (f"$.findings[{index}].location", finding)
         for index, finding in enumerate(final["findings"])
@@ -1461,11 +1812,60 @@ def command_validate_final() -> None:
         if record["challenge"]["proposed_finding"] is not None
     ]
     for field, finding in located_findings:
-        path = source_path(final["scope"], finding["location"], field)
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            line_count = sum(1 for _ in handle)
+        line_count = location_line_count(final["scope"], finding["location"], field)
         require(finding["location"]["end_line"] <= line_count,
                 "validate-final", "final", "source_line_out_of_range", field)
+        require_location_overlaps_change(final["scope"], finding, field)
+    located_evidence: list[tuple[str, dict]] = []
+    evidence_sources: list[tuple[str, list[dict]]] = []
+    for index, finding in enumerate(final["findings"]):
+        evidence_sources.append((f"$.findings[{index}].evidence", finding["evidence"]))
+    for index, rejected in enumerate(final["rejected_findings"]):
+        evidence_sources.append((
+            f"$.rejected_findings[{index}].finding.evidence", rejected["finding"]["evidence"]
+        ))
+    for index, unresolved in enumerate(final["unresolved_findings"]):
+        evidence_sources.append((
+            f"$.unresolved_findings[{index}].finding.evidence",
+            unresolved["finding"]["evidence"],
+        ))
+    for index, record in enumerate(final["review_records"]):
+        evidence_sources.extend([
+            (f"$.review_records[{index}].case_for.evidence", record["case_for"]["evidence"]),
+            (f"$.review_records[{index}].challenge.evidence", record["challenge"]["evidence"]),
+            (f"$.review_records[{index}].final_judgment.evidence",
+             record["final_judgment"]["evidence"]),
+            (f"$.review_records[{index}].presented_finding.evidence",
+             record["presented_finding"]["evidence"]),
+        ])
+        proposed = record["challenge"]["proposed_finding"]
+        if proposed is not None:
+            evidence_sources.append((
+                f"$.review_records[{index}].challenge.proposed_finding.evidence",
+                proposed["evidence"],
+            ))
+    for prefix, evidence_items in evidence_sources:
+        for index, evidence in enumerate(evidence_items):
+            if evidence.get("location") is not None:
+                located_evidence.append((f"{prefix}[{index}].location", evidence))
+    for field, evidence in located_evidence:
+        line_count = location_line_count(final["scope"], evidence["location"], field)
+        require(evidence["location"]["end_line"] <= line_count,
+                "validate-final", "final", "evidence_line_out_of_range", field)
+    qualification_sources: list[tuple[str, dict]] = []
+    for index, record in enumerate(final["review_records"]):
+        qualification_sources.extend([
+            (f"$.review_records[{index}].challenge.qualification",
+             record["challenge"]["qualification"]),
+            (f"$.review_records[{index}].final_judgment.qualification",
+             record["final_judgment"]["qualification"]),
+        ])
+    for prefix, qualification in qualification_sources:
+        for index, step in enumerate(qualification["reachability_path"]):
+            field = f"{prefix}.reachability_path[{index}].location"
+            line_count = location_line_count(final["scope"], step["location"], field)
+            require(step["location"]["end_line"] <= line_count,
+                    "validate-final", "final", "reachability_line_out_of_range", field)
     print(
         f"FINAL_VALID {final_path} findings={len(final['findings'])} "
         f"rejected={len(final['rejected_findings'])} "
