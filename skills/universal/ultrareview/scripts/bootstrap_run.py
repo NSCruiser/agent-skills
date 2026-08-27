@@ -32,6 +32,27 @@ def resolved_directory(raw: str, label: str) -> Path:
     return path
 
 
+def resolved_skill(raw: str, label: str, expected_name: str) -> Path:
+    path = Path(raw).resolve(strict=False)
+    if not path.is_file():
+        fail(f"{label}_not_file {path}")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        frontmatter_end = lines.index("---", 1)
+    except (OSError, UnicodeError, ValueError):
+        fail(f"{label}_invalid_frontmatter {path}")
+    if not lines or lines[0] != "---":
+        fail(f"{label}_invalid_frontmatter {path}")
+    names = []
+    for line in lines[1:frontmatter_end]:
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == "name":
+            names.append(value.strip().strip("'\""))
+    if names != [expected_name]:
+        fail(f"{label}_wrong_name {path}")
+    return path
+
+
 def ensure_disjoint(run_root: Path, repository: Path) -> None:
     try:
         run_root.relative_to(repository)
@@ -80,6 +101,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repository", required=True, help="Repository being reviewed.")
     parser.add_argument(
+        "--ponytail-review-skill",
+        required=True,
+        help="Current ponytail-review SKILL.md to freeze for this run.",
+    )
+    parser.add_argument(
         "--run-root",
         help="New run directory. Defaults to a fresh directory under the system temp root.",
     )
@@ -94,6 +120,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     repository = resolved_directory(args.repository, "repository")
+    ponytail_review_skill = resolved_skill(
+        args.ponytail_review_skill, "ponytail_review_skill", "ponytail-review"
+    )
     if args.run_root:
         run_root = Path(args.run_root).resolve(strict=False)
         ensure_disjoint(run_root, repository)
@@ -109,11 +138,14 @@ def main() -> None:
         (run_root / "packets" / stage).mkdir(parents=True)
         (run_root / "artifacts" / stage).mkdir(parents=True)
     (run_root / "final").mkdir()
+    ponytail_policy_path = run_root / "policies" / "ponytail-review" / "SKILL.md"
+    ponytail_policy_path.parent.mkdir(parents=True)
 
     for source, relative_target in PACKAGED_FILES.items():
         if not source.is_file():
             fail(f"packaged_file_missing {source}")
         atomic_copy(source, run_root / relative_target)
+    atomic_copy(ponytail_review_skill, ponytail_policy_path)
 
     repository_binding_path = run_root / "repository.json"
     atomic_write_json(repository_binding_path, {"repository_path": str(repository)})
@@ -129,6 +161,7 @@ def main() -> None:
     print(f"REPOSITORY_BINDING_PATH {repository_binding_path}")
     print(f"SCOPE_PATH {run_root / 'scope.json'}")
     print(f"LENSES_PATH {run_root / 'lenses.json'}")
+    print(f"PONYTAIL_POLICY_PATH {ponytail_policy_path}")
     print(f"COORDINATOR_PATH {run_root / 'pipeline.py'}")
 
 

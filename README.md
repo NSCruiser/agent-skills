@@ -14,9 +14,9 @@ A curated collection of reusable AI agent skills, organized into universal workf
 
 | Skill | Description |
 | --- | --- |
-| [`ultrareview`](skills/universal/ultrareview) | Runs a portable four-stage, read-only adversarial code review with independent review, deduplication, refutation, and final judgment. Inspired by Claude Code's [dynamic workflows](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code). |
+| [`ultrareview`](skills/universal/ultrareview) | Runs a portable read-only adversarial code review with independent review, deduplication, Ponytail-guided refutation, and selective final judgment. Inspired by Claude Code's [dynamic workflows](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code). |
 
-`ultrareview` uses a Python/JSON pipeline and self-contained filesystem packets that any harness with isolated worker tasks can execute. It retains optional Codex guidance and `agents/openai.yaml` metadata without depending on those features for its core workflow.
+`ultrareview` uses a Python/JSON pipeline and self-contained filesystem packets that any harness with isolated worker tasks can execute. Each run requires the current `ponytail-review` `SKILL.md`; the bootstrap freezes that policy so later plugin updates affect new runs without changing an active run. It retains optional Codex guidance and `agents/openai.yaml` metadata without depending on those features for its core workflow.
 
 ## Repository layout
 
@@ -26,7 +26,7 @@ skills/
 └── universal/   Self-contained skills that work without a Codex-specific runtime.
 ```
 
-Every skill directory is independently installable and keeps its own `SKILL.md`, references, scripts, assets, metadata, and tests. Runtime files must not depend on paths outside their skill directory.
+Every skill directory is independently installable and keeps its own `SKILL.md`, references, scripts, assets, metadata, and tests. Runtime files must not hardcode or import paths outside their skill directory; declared CLI-supplied policies may be snapshotted into an isolated run.
 
 ## Install in Codex
 
@@ -44,7 +44,7 @@ This is a snapshot install. The installer intentionally stops when a destination
 
 ## Install in other harnesses
 
-Install or copy [`skills/universal/ultrareview`](skills/universal/ultrareview) with the harness's native skill mechanism. The harness must provide Git, Python 3, isolated worker tasks, waiting/status primitives, and worker access to the reviewed repository plus a shared temporary directory; no Codex-specific adapter is required.
+Install or copy [`skills/universal/ultrareview`](skills/universal/ultrareview) with the harness's native skill mechanism. Also install `ponytail-review` and supply its current `SKILL.md` path when bootstrapping a run. The harness must provide Git, Python 3, isolated worker tasks, waiting/status primitives, and worker access to the reviewed repository plus a shared temporary directory; no Codex-specific adapter is required.
 
 ## Classification
 

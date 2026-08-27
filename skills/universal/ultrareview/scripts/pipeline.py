@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Coordinate one harness-independent Ultrareview run using protocol v4."""
+"""Coordinate one harness-independent Ultrareview run using protocol v5."""
 
 from __future__ import annotations
 
@@ -15,12 +15,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SCOPE_PATH = ROOT / "scope.json"
 LENSES_PATH = ROOT / "lenses.json"
 SCHEMA_PATH = ROOT / "pipeline-schemas.json"
 STAGE_INSTRUCTIONS_PATH = ROOT / "stage-instructions.json"
 REPOSITORY_BINDING_PATH = ROOT / "repository.json"
+PONYTAIL_POLICY_PATH = ROOT / "policies" / "ponytail-review" / "SKILL.md"
 STATE_PATH = ROOT / ".pipeline-state.json"
 CANONICAL_ID = re.compile(r"^F[0-9]{3,}$")
 RAW_ID = re.compile(r"^[A-Za-z0-9._-]+:C[0-9]{2,}$")
@@ -244,6 +245,7 @@ def runtime_contract_hashes(stage: str, task_id: str) -> dict[str, str]:
         LENSES_PATH,
         SCHEMA_PATH,
         STAGE_INSTRUCTIONS_PATH,
+        PONYTAIL_POLICY_PATH,
         ROOT / "pipeline.py",
     )
     return {str(path): file_sha256(path, stage, task_id) for path in paths}
@@ -551,6 +553,11 @@ def load_stage_instructions() -> dict[str, list[str]]:
     return {stage: mapping[stage] for stage in ("adversarial", "dedup", "refutation", "judgment")}
 
 
+def render_stage_instructions(stage: str, **values: str) -> list[str]:
+    values.setdefault("ponytail_policy_path", str(PONYTAIL_POLICY_PATH))
+    return [item.format(**values) for item in load_stage_instructions()[stage]]
+
+
 def make_packet(state: dict, *, stage: str, agent_id: str, input_paths: list[str],
                 assigned_ids: list[str], lane: str | None, instructions: list[str],
                 attempt: int = 1) -> tuple[Path, Path, str]:
@@ -780,6 +787,41 @@ def validate_qualifying_evidence(evidence: list[dict], disposition: str,
             "qualifying_result_requires_verified_reachability_evidence", field)
 
 
+def validate_ponytail_assessment(value: object, stage: str, task_id: str,
+                                 field: str) -> dict:
+    row = exact_keys(
+        value,
+        {"conclusion", "basis", "smallest_proportionate_outcome"},
+        stage,
+        task_id,
+        field,
+    )
+    enum_string(
+        row["conclusion"],
+        {"lean", "over_engineered", "over_defensive", "mixed", "unclear"},
+        stage,
+        task_id,
+        f"{field}.conclusion",
+    )
+    nonempty_string(row["basis"], stage, task_id, f"{field}.basis")
+    nonempty_string(
+        row["smallest_proportionate_outcome"],
+        stage,
+        task_id,
+        f"{field}.smallest_proportionate_outcome",
+    )
+    return row
+
+
+def validate_ponytail_outcome(assessment: dict, qualification: dict, verdict: str,
+                              stage: str, task_id: str, field: str) -> None:
+    require(verdict != "uphold" or assessment["conclusion"] == "lean",
+            stage, task_id, "ponytail_verdict_mismatch", f"{field}.verdict")
+    require(assessment["conclusion"] != "unclear" or qualification["fix_value"] == "unclear",
+            stage, task_id, "ponytail_fix_value_mismatch",
+            f"{field}.qualification.fix_value")
+
+
 def validate_refutation(packet: dict, value: object, scope: dict) -> None:
     stage = "refutation"
     task_id = packet["task_id"]
@@ -798,8 +840,9 @@ def validate_refutation(packet: dict, value: object, scope: dict) -> None:
     for index, result in enumerate(results):
         field = f"$.results[{index}]"
         row = exact_keys(result, {"candidate_id", "verdict", "qualification",
-                         "correctness_analysis", "proportionality_analysis", "evidence",
-                         "replacement_finding", "residual_uncertainty"}, stage, task_id, field)
+                         "correctness_analysis", "proportionality_analysis",
+                         "ponytail_assessment", "evidence", "replacement_finding",
+                         "residual_uncertainty"}, stage, task_id, field)
         candidate_id = nonempty_string(row["candidate_id"], stage, task_id, f"{field}.candidate_id")
         require(bool(CANONICAL_ID.fullmatch(candidate_id)), stage, task_id,
                 "invalid_id", f"{field}.candidate_id")
@@ -817,6 +860,12 @@ def validate_refutation(packet: dict, value: object, scope: dict) -> None:
         nonempty_string(row["correctness_analysis"], stage, task_id, f"{field}.correctness_analysis")
         nonempty_string(row["proportionality_analysis"], stage, task_id,
                         f"{field}.proportionality_analysis")
+        ponytail = validate_ponytail_assessment(
+            row["ponytail_assessment"], stage, task_id, f"{field}.ponytail_assessment"
+        )
+        validate_ponytail_outcome(
+            ponytail, row["qualification"], row["verdict"], stage, task_id, field
+        )
         require(isinstance(row["evidence"], list), stage, task_id, "invalid_type", f"{field}.evidence")
         for evidence_index, evidence in enumerate(row["evidence"]):
             validate_evidence(evidence, stage, task_id, f"{field}.evidence[{evidence_index}]")
@@ -856,7 +905,8 @@ def validate_judgment(packet: dict, value: object, scope: dict) -> None:
     for index, result in enumerate(results):
         field = f"$.results[{index}]"
         row = exact_keys(result, {"candidate_id", "verdict", "qualification",
-                         "resolved_points", "evidence", "final_finding", "residual_risk"},
+                         "resolved_points", "ponytail_assessment", "evidence",
+                         "final_finding", "residual_risk"},
                          stage, task_id, field)
         candidate_id = nonempty_string(row["candidate_id"], stage, task_id, f"{field}.candidate_id")
         require(bool(CANONICAL_ID.fullmatch(candidate_id)), stage, task_id,
@@ -877,6 +927,12 @@ def validate_judgment(packet: dict, value: object, scope: dict) -> None:
         )
         require(bool(resolved_points), stage, task_id,
                 "invalid_array", f"{field}.resolved_points")
+        ponytail = validate_ponytail_assessment(
+            row["ponytail_assessment"], stage, task_id, f"{field}.ponytail_assessment"
+        )
+        validate_ponytail_outcome(
+            ponytail, row["qualification"], row["verdict"], stage, task_id, field
+        )
         require(isinstance(row["evidence"], list), stage, task_id, "invalid_type", f"{field}.evidence")
         for evidence_index, evidence in enumerate(row["evidence"]):
             validate_evidence(evidence, stage, task_id, f"{field}.evidence[{evidence_index}]")
@@ -906,7 +962,7 @@ def validate_challenge_record(value: object, candidate_id: str, scope: dict,
         value,
         {
             "verdict", "qualification", "correctness_analysis", "proportionality_analysis",
-            "evidence", "proposed_finding", "residual_uncertainty",
+            "ponytail_assessment", "evidence", "proposed_finding", "residual_uncertainty",
         },
         stage,
         task_id,
@@ -926,6 +982,12 @@ def validate_challenge_record(value: object, candidate_id: str, scope: dict,
                     f"{field}.correctness_analysis")
     nonempty_string(row["proportionality_analysis"], stage, task_id,
                     f"{field}.proportionality_analysis")
+    ponytail = validate_ponytail_assessment(
+        row["ponytail_assessment"], stage, task_id, f"{field}.ponytail_assessment"
+    )
+    validate_ponytail_outcome(
+        ponytail, row["qualification"], row["verdict"], stage, task_id, field
+    )
     require(isinstance(row["evidence"], list), stage, task_id,
             "invalid_type", f"{field}.evidence")
     for index, evidence in enumerate(row["evidence"]):
@@ -947,23 +1009,32 @@ def validate_challenge_record(value: object, candidate_id: str, scope: dict,
 
 def validate_final_judgment_record(value: object, scope: dict,
                                    stage: str, task_id: str, field: str) -> dict:
-    row = exact_keys(value, {"source", "verdict", "qualification", "basis", "evidence",
-                                  "residual_risk"},
+    row = exact_keys(value, {"source", "verdict", "qualification", "basis",
+                                  "ponytail_assessment", "evidence", "residual_risk"},
                      stage, task_id, field)
-    require(row["source"] == "judgment", stage, task_id,
-            "invalid_judgment_source", f"{field}.source")
+    source = enum_string(row["source"], {"refutation", "judgment"}, stage, task_id,
+                         f"{field}.source")
     enum_string(row["verdict"], {"uphold", "modify", "reject", "unresolved"},
                 stage, task_id, f"{field}.verdict")
+    if source == "refutation":
+        require(row["verdict"] == "uphold", stage, task_id,
+                "invalid_refutation_binding", f"{field}.verdict")
     disposition = validate_qualification(
         row["qualification"], scope["review_kind"], stage, task_id,
         f"{field}.qualification",
     )
     validate_qualification_verdict(
-        disposition, row["verdict"], judgment=True,
+        disposition, row["verdict"], judgment=source == "judgment",
         stage=stage, task_id=task_id, field=f"{field}.verdict",
     )
     basis = string_list(row["basis"], stage, task_id, f"{field}.basis", nonempty=True)
     require(bool(basis), stage, task_id, "invalid_array", f"{field}.basis")
+    ponytail = validate_ponytail_assessment(
+        row["ponytail_assessment"], stage, task_id, f"{field}.ponytail_assessment"
+    )
+    validate_ponytail_outcome(
+        ponytail, row["qualification"], row["verdict"], stage, task_id, field
+    )
     require(isinstance(row["evidence"], list), stage, task_id,
             "invalid_type", f"{field}.evidence")
     for index, evidence in enumerate(row["evidence"]):
@@ -1124,6 +1195,12 @@ def validate_final_payload(value: object, expected_scope: dict,
             row["final_judgment"], expected_scope,
             stage, task_id, f"{field}.final_judgment",
         )
+        if final_judgment["source"] == "refutation":
+            require(challenge["verdict"] == "uphold", stage, task_id,
+                    "invalid_binding_source", f"{field}.final_judgment.source")
+        else:
+            require(challenge["verdict"] != "uphold", stage, task_id,
+                    "unnecessary_judgment", f"{field}.final_judgment.source")
         validate_finding(row["presented_finding"], stage, task_id,
                          f"{field}.presented_finding", raw=False)
         require(row["presented_finding"]["id"] == candidate_id, stage, task_id,
@@ -1186,6 +1263,17 @@ def validate_final_payload(value: object, expected_scope: dict,
     )
     require(trace["refutation_results"] == trace["canonical_candidates"], stage, task_id,
             "trace_invariant", "$.trace.refutation_results")
+    require(
+        trace["judgment_results"]
+        == sum(
+            record["final_judgment"]["source"] == "judgment"
+            for record in review_records
+        ),
+        stage,
+        task_id,
+        "trace_invariant",
+        "$.trace.judgment_results",
+    )
     for key, expected in expected_trace.items():
         require(trace[key] == expected, stage, task_id,
                 "trace_invariant", f"$.trace.{key}")
@@ -1301,7 +1389,6 @@ def command_init() -> None:
     scope = read_json(SCOPE_PATH, "init", "scope")
     lenses = read_json(LENSES_PATH, "init", "lenses")
     read_json(SCHEMA_PATH, "init", "schema")
-    stage_instructions = load_stage_instructions()
     validate_scope(scope)
     validate_lenses(lenses)
     require_worktree_unchanged(scope, "init", "scope")
@@ -1316,10 +1403,9 @@ def command_init() -> None:
         ),
     }
     for reviewer in lenses["reviewers"]:
-        instructions = [
-            item.format(lane=reviewer["lane"])
-            for item in stage_instructions["adversarial"]
-        ] + [f"Lane focus: {item}" for item in reviewer["focus"]]
+        instructions = render_stage_instructions(
+            "adversarial", lane=reviewer["lane"]
+        ) + [f"Lane focus: {item}" for item in reviewer["focus"]]
         packet_path, output_path, task_id = make_packet(
             state,
             stage="adversarial",
@@ -1358,7 +1444,7 @@ def command_seal_adversarial(raw_paths: list[str]) -> None:
         print(f"STAGE_SEALED adversarial {len(rows)} 0")
         command_finalize()
         return
-    instructions = load_stage_instructions()["dedup"]
+    instructions = render_stage_instructions("dedup")
     packet_path, output_path, task_id = make_packet(
         state,
         stage="dedup",
@@ -1389,9 +1475,8 @@ def command_accept_dedup(raw_path: str, worker_count: int) -> None:
     state["current_packets"]["dedup"] = []
     state["canonical_ids"] = canonical_ids
     groups = partition(canonical_ids, min(worker_count, len(canonical_ids)))
-    stage_instructions = load_stage_instructions()
     for index, assigned in enumerate(groups, start=1):
-        instructions = stage_instructions["refutation"]
+        instructions = render_stage_instructions("refutation")
         packet_path, output_path, task_id = make_packet(
             state,
             stage="refutation",
@@ -1416,10 +1501,12 @@ def command_accept_refutation(raw_paths: list[str], worker_count: int) -> None:
     require_worktree_unchanged(scope, "refutation", "coordinator")
     rows = match_artifact_paths(state, "refutation", raw_paths)
     covered: list[str] = []
+    verdicts: dict[str, str] = {}
     for packet, artifact, _ in rows:
         validate_refutation(packet, artifact, scope)
         for result in artifact["results"]:
             covered.append(result["candidate_id"])
+            verdicts[result["candidate_id"]] = result["verdict"]
     require(len(covered) == len(set(covered)), "refutation", "coordinator",
             "duplicate_candidate_id", "$.results")
     require(set(covered) == set(state["canonical_ids"]), "refutation", "coordinator",
@@ -1427,12 +1514,23 @@ def command_accept_refutation(raw_paths: list[str], worker_count: int) -> None:
     state["accepted"]["refutation"] = [path for _, _, path in rows]
     record_accepted_hashes(state, "refutation", state["accepted"]["refutation"])
     state["current_packets"]["refutation"] = []
-    state["judgment_ids"] = covered
-    groups = partition(covered, min(worker_count, len(covered)))
+    challenged = [
+        candidate_id
+        for candidate_id in state["canonical_ids"]
+        if verdicts[candidate_id] != "uphold"
+    ]
+    state["judgment_ids"] = challenged
+    if not challenged:
+        state["accepted"]["judgment"] = []
+        state["phase"] = "ready_finalize"
+        save_state(state)
+        print(f"STAGE_ACCEPTED refutation {len(covered)} 0")
+        command_finalize()
+        return
+    groups = partition(challenged, min(worker_count, len(challenged)))
     judgment_inputs = [state["accepted"]["dedup"]] + state["accepted"]["refutation"]
-    stage_instructions = load_stage_instructions()
     for index, assigned in enumerate(groups, start=1):
-        instructions = stage_instructions["judgment"]
+        instructions = render_stage_instructions("judgment")
         packet_path, output_path, task_id = make_packet(
             state,
             stage="judgment",
@@ -1445,7 +1543,7 @@ def command_accept_refutation(raw_paths: list[str], worker_count: int) -> None:
         print(f"PACKET_CREATED judgment {task_id} {packet_path} {output_path}")
     state["phase"] = "judgment"
     save_state(state)
-    print(f"STAGE_ACCEPTED refutation {len(covered)} {len(covered)}")
+    print(f"STAGE_ACCEPTED refutation {len(covered)} {len(challenged)}")
 
 
 def command_accept_judgment(raw_paths: list[str]) -> None:
@@ -1524,6 +1622,8 @@ def assemble_final_payload(state: dict, scope: dict) -> dict:
                 judgments[result["candidate_id"]] = result
         refutation_count = len(refutations)
         judgment_count = len(judgments)
+        require(set(judgments) == set(state.get("judgment_ids", [])),
+                "finalize", "coordinator", "judgment_coverage", "$.judgment_ids")
         for candidate_id in state["canonical_ids"]:
             case_for = canonical[candidate_id]
             refutation = refutations[candidate_id]
@@ -1532,10 +1632,34 @@ def assemble_final_payload(state: dict, scope: dict) -> dict:
                 "qualification": refutation["qualification"],
                 "correctness_analysis": refutation["correctness_analysis"],
                 "proportionality_analysis": refutation["proportionality_analysis"],
+                "ponytail_assessment": refutation["ponytail_assessment"],
                 "evidence": refutation["evidence"],
                 "proposed_finding": refutation["replacement_finding"],
                 "residual_uncertainty": refutation["residual_uncertainty"],
             }
+            if refutation["verdict"] == "uphold":
+                presented_finding = case_for
+                findings.append(presented_finding)
+                final_judgment = {
+                    "source": "refutation",
+                    "verdict": "uphold",
+                    "qualification": refutation["qualification"],
+                    "basis": [
+                        refutation["correctness_analysis"],
+                        refutation["proportionality_analysis"],
+                    ],
+                    "ponytail_assessment": refutation["ponytail_assessment"],
+                    "evidence": refutation["evidence"],
+                    "residual_risk": refutation["residual_uncertainty"],
+                }
+                review_records.append({
+                    "candidate_id": candidate_id,
+                    "case_for": case_for,
+                    "challenge": challenge,
+                    "final_judgment": final_judgment,
+                    "presented_finding": presented_finding,
+                })
+                continue
             finding_under_judgment = (
                 refutation["replacement_finding"]
                 if refutation["verdict"] == "modify"
@@ -1576,6 +1700,7 @@ def assemble_final_payload(state: dict, scope: dict) -> dict:
                     "verdict": judgment["verdict"],
                     "qualification": judgment["qualification"],
                     "basis": judgment["resolved_points"],
+                    "ponytail_assessment": judgment["ponytail_assessment"],
                     "evidence": judgment["evidence"],
                     "residual_risk": judgment["residual_risk"],
                 },
