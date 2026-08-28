@@ -42,6 +42,18 @@
         "status": { "enum": ["verified", "inference"] }
       }
     },
+    "evidence_repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_path", "baseline_worktree_status"],
+      "properties": {
+        "repository_path": { "type": "string", "minLength": 1 },
+        "baseline_worktree_status": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
     "manifestation": {
       "type": "object",
       "additionalProperties": false,
@@ -261,6 +273,10 @@
           "type": "array",
           "items": { "type": "string" },
           "uniqueItems": true
+        },
+        "evidence_repositories": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_repository" }
         },
         "finding_standard": { "type": "string", "minLength": 1 },
         "baseline_worktree_status": {

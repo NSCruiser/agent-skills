@@ -204,6 +204,46 @@ class PipelineCase(unittest.TestCase):
             "status": "verified",
         }
 
+    def declare_evidence_repository(self) -> tuple[Path, Path]:
+        repository = self.root / "evidence-repository"
+        repository.mkdir()
+        subprocess.run(
+            ["git", "init", "-q", str(repository)],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        source = repository / "contract.py"
+        source.write_text("external contract\n", encoding="utf-8")
+        baseline = subprocess.run(
+            [
+                "git", "-C", str(repository), "status", "--short",
+                "--untracked-files=all",
+            ],
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.splitlines()
+        scope_path = self.run_root / "scope.json"
+        scope = json.loads(scope_path.read_text(encoding="utf-8"))
+        scope["evidence_repositories"] = [{
+            "repository_path": str(repository.resolve()),
+            "baseline_worktree_status": baseline,
+        }]
+        write_json(scope_path, scope)
+        return repository.resolve(), source.resolve()
+
+    def cross_repository_evidence(self, source: Path) -> dict:
+        return {
+            "kind": "contract",
+            "location": {
+                "path": str(source), "start_line": 1, "end_line": 1, "side": "new",
+            },
+            "reference": "external contract fixture",
+            "statement": "The declared evidence repository contains the supporting contract.",
+            "status": "verified",
+        }
+
     def ponytail_assessment(self, conclusion: str = "lean") -> dict:
         return {
             "conclusion": conclusion,
@@ -338,6 +378,16 @@ class PipelineCase(unittest.TestCase):
             "scaffold-artifact", str(packet_path), expected_code=2,
         )
         self.assertIn("worktree_changed", failure.stdout)
+
+    def test_same_status_evidence_repository_drift_is_blocked(self) -> None:
+        _, source = self.declare_evidence_repository()
+        self.command("init")
+        packet_path, _ = self.one_packet("adversarial")
+        source.write_text("changed external contract\n", encoding="utf-8")
+        failure = self.command(
+            "scaffold-artifact", str(packet_path), expected_code=2,
+        )
+        self.assertIn("evidence_repository_snapshot_changed", failure.stdout)
 
     def test_same_status_content_drift_is_blocked_by_repository_fingerprint(self) -> None:
         volatile = self.repository / "volatile.txt"
@@ -592,15 +642,24 @@ class PipelineCase(unittest.TestCase):
         changed = self.command("validate-final", expected_code=2)
         self.assertIn("accepted_artifact_changed", changed.stdout)
 
-    def test_upheld_candidate_skips_judgment_and_finalizes(self) -> None:
+    def test_upheld_candidate_accepts_declared_cross_repository_evidence(self) -> None:
+        _, external_source = self.declare_evidence_repository()
+        external_evidence = self.cross_repository_evidence(external_source)
+        cross_qualification = self.qualification()
+        cross_qualification["reachability_path"].append({
+            "location": external_evidence["location"],
+            "reference": "external contract entry",
+        })
         self.command("init")
         raw = self.finding("reviewer-01:C01")
+        raw["evidence"].append(external_evidence)
         _, adversarial_path = self.write_adversarial([raw])
         self.command("seal-adversarial", str(adversarial_path))
 
         dedup_packet_path, dedup_packet = self.one_packet("dedup")
         dedup_path = Path(dedup_packet["output_path"])
         canonical = self.finding("F001")
+        canonical["evidence"].append(external_evidence)
         write_json(dedup_path, {
             "schema_version": 5,
             "stage": "dedup",
@@ -629,11 +688,11 @@ class PipelineCase(unittest.TestCase):
             "results": [{
                 "candidate_id": "F001",
                 "verdict": "uphold",
-                "qualification": self.qualification(),
+                "qualification": cross_qualification,
                 "correctness_analysis": correctness,
                 "proportionality_analysis": proportionality,
                 "ponytail_assessment": self.ponytail_assessment(),
-                "evidence": [self.reachability_evidence()],
+                "evidence": [self.reachability_evidence(), external_evidence],
                 "replacement_finding": None,
                 "residual_uncertainty": "",
             }],

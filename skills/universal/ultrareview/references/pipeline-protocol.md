@@ -51,7 +51,9 @@ The bootstrap script binds the resolved repository path in `repository.json`, co
 
 At `init`, hash `repository.json`, `scope.json`, `lenses.json`, `pipeline-schemas.json`, `stage-instructions.json`, the frozen Ponytail policy, and the copied `pipeline.py`. Every later coordinator command rejects a changed contract resource with `runtime_contract_changed`; scope, output language, lenses, policy, and instructions cannot drift inside one authorized run.
 
-Record `scope.baseline_worktree_status` as the exact output lines from `git -C <repository> status --short --untracked-files=all` immediately before `init`. At `init`, the coordinator also fingerprints HEAD, staged and unstaged binary diffs, and non-ignored untracked contents. It compares both the status and fingerprint before validating artifacts, advancing stages, retrying, finalizing, and validating the final payload. Stop on `worktree_changed` or `repository_snapshot_changed`; do not repair or restore the repository. This detects Git-visible drift but is not a substitute for a read-only filesystem sandbox.
+Record `scope.baseline_worktree_status` as the exact output lines from `git -C <repository> status --short --untracked-files=all` immediately before `init`. When supporting evidence lives in another Git repository, add its absolute root and exact status to optional `scope.evidence_repositories`. The reviewed finding location remains in `scope.repository_path`; evidence and qualification reachability steps may use absolute, current-side paths inside a declared evidence repository. Relative paths always resolve inside the reviewed repository. Material outside these Git roots uses `location: null` plus a concrete reference.
+
+At `init`, the coordinator fingerprints HEAD, staged and unstaged binary diffs, and non-ignored untracked contents for the reviewed repository and every declared evidence repository. It compares each status and fingerprint before validating artifacts, advancing stages, retrying, finalizing, and validating the final payload. Stop on the corresponding worktree or snapshot drift error; do not repair or restore any repository. This detects Git-visible drift but is not a substitute for a read-only filesystem sandbox.
 
 ## Fixed schemas
 
@@ -83,6 +85,8 @@ JSON Schema cannot express every relationship between records. The coordinator m
 18. Runtime contract hashes bind scope, output language, lenses, repository binding, frozen Ponytail policy, Schema, stage instructions, and coordinator code from `init` through final validation.
 19. Change-review `scope.comparison_base` is the full immutable commit OID returned by `git merge-base` or `git rev-parse`; symbolic refs and short OIDs are rejected before workers launch.
 20. A refuter or judge may use `uphold` only when its `ponytail_assessment.conclusion` is `lean`; any remaining Ponytail uncertainty must stay on the challenged path.
+21. Every `scope.evidence_repositories` entry names a unique absolute Git repository root other than the reviewed repository and records its exact baseline worktree status. The coordinator fingerprints every declared repository at `init` and rejects later status, HEAD, diff, or untracked-content drift.
+22. Primary finding and replacement-finding locations stay inside the reviewed repository. Supporting evidence and qualification reachability locations may additionally use an absolute path inside a declared evidence repository and must use side `new`; undeclared external paths and cross-repository old-side locations are rejected during artifact validation.
 
 The coordinator prints only status, counts, task IDs, packet paths, output paths, reason codes, and invalid field paths. It never prints findings, evidence, recommendations, raw JSON, or packet contents.
 
@@ -107,7 +111,7 @@ Every packet must tell the worker to read `scope.json` first, then read and foll
 
 Use these stage instructions:
 
-1. An adversarial packet names the assigned lane and requires direct inspection, complete coverage of that lane, a concrete manifestation for every candidate, and an empty candidate list when no issue qualifies.
+1. An adversarial packet names the assigned lane and requires direct inspection, complete coverage of that lane, a concrete manifestation for every candidate, and an empty candidate list when no issue qualifies. It also distinguishes primary finding locations from supporting locations in declared evidence repositories.
 2. A dedup packet requires complete raw ID coverage, merging only true duplicates, preserving the clearest accurate manifestation, and no decision on validity.
 3. A refutation packet requires reading the frozen Ponytail policy, direct inspection of the relevant diff, source, callers, and tests, a complete qualification gate and Ponytail assessment, and correctness, reachability, scope, impact, and proportionality analysis for every assigned canonical ID.
 4. A judgment packet covers challenged IDs only. It independently rereads the frozen Ponytail policy, repeats the qualification gate, Ponytail assessment, and direct inspection, and returns one binding disposition for every assigned ID.
@@ -126,7 +130,7 @@ The packaged `pipeline.py` uses these commands and accepts only current-attempt 
 8. `status` prints only the current phase and current packet/output paths so a compacted or resumed orchestrator task can recover safely.
 9. `scaffold-artifact <packet>` optionally writes a top-level artifact skeleton to the packet's output path and refuses to overwrite an existing artifact.
 10. `validate-artifact <packet> <artifact>` validates one worker artifact against its packet and current run state. Workers must execute the exact `validation_command` argv stored in their packet before sending a success receipt.
-11. `validate-final` reconstructs and checks the final payload, then verifies that every upheld, rejected, and unresolved finding cites in-range source lines on the declared current or comparison-base side.
+11. `validate-final` reconstructs and checks the final payload, then verifies that every upheld, rejected, and unresolved finding cites in-range source lines on the declared current or comparison-base side and that every supporting location belongs to the reviewed repository or a declared, unchanged evidence repository.
 
 A transition succeeds only when all expected artifacts pass validation. The coordinator applies fixed routing rules and does not decide whether a finding is correct.
 
@@ -188,7 +192,7 @@ The orchestrator may give those field paths to the responsible worker without re
 
 ## Final payload
 
-The coordinator writes one `final.json` that follows the fixed Schema. It contains surviving findings, rejected findings, structured unresolved findings, Stage 1 coverage, trace counts, and one `review_records` audit entry for every canonical candidate. Each audit entry preserves the original case, the refuter's analysis, Ponytail assessment, and evidence, the binding refuter or judge basis and evidence, and the exact finding selected for presentation. It must not contain raw candidates or redundant copies of complete intermediate artifacts. The coordinator records a SHA-256 digest when each stage artifact is accepted. `validate-final` first rejects changed accepted artifacts, then reconstructs the expected payload from them and requires exact equality before verifying finding and evidence locations against repository content and the appropriate diff side.
+The coordinator writes one `final.json` that follows the fixed Schema. It contains surviving findings, rejected findings, structured unresolved findings, Stage 1 coverage, trace counts, and one `review_records` audit entry for every canonical candidate. Each audit entry preserves the original case, the refuter's analysis, Ponytail assessment, and evidence, the binding refuter or judge basis and evidence, and the exact finding selected for presentation. It must not contain raw candidates or redundant copies of complete intermediate artifacts. The coordinator records a SHA-256 digest when each stage artifact is accepted. `validate-final` first rejects changed accepted artifacts and any reviewed or evidence repository drift, then reconstructs the expected payload from accepted artifacts and requires exact equality before verifying primary finding locations against the reviewed diff and supporting locations against their declared repository snapshots.
 
 Calculate trace values from unique canonical IDs:
 

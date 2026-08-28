@@ -157,6 +157,50 @@ def git_worktree_status(repository: Path, stage: str, task_id: str) -> list[str]
     return result.stdout.splitlines()
 
 
+def evidence_repository_specs(scope: dict, stage: str,
+                              task_id: str) -> list[tuple[Path, list[str]]]:
+    value = scope.get("evidence_repositories", [])
+    require(isinstance(value, list), stage, task_id, "invalid_type",
+            "$.evidence_repositories")
+    primary = load_bound_repository(stage, task_id)
+    specs: list[tuple[Path, list[str]]] = []
+    seen: set[Path] = set()
+    for index, item in enumerate(value):
+        field = f"$.evidence_repositories[{index}]"
+        row = exact_keys(item, {"repository_path", "baseline_worktree_status"},
+                         stage, task_id, field)
+        raw_path = nonempty_string(row["repository_path"], stage, task_id,
+                                   f"{field}.repository_path")
+        path = Path(raw_path)
+        require(path.is_absolute(), stage, task_id,
+                "evidence_repository_not_absolute", f"{field}.repository_path")
+        require(not path.is_symlink(), stage, task_id,
+                "evidence_repository_symlink", f"{field}.repository_path")
+        repository = path.resolve(strict=False)
+        require(repository.is_dir(), stage, task_id,
+                "evidence_repository_missing", f"{field}.repository_path")
+        top_level = subprocess.run(
+            ["git", "-C", str(repository), "rev-parse", "--show-toplevel"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        require(top_level.returncode == 0, stage, task_id,
+                "evidence_repository_not_git", f"{field}.repository_path")
+        require(Path(top_level.stdout.strip()).resolve(strict=False) == repository,
+                stage, task_id, "evidence_repository_not_root",
+                f"{field}.repository_path")
+        require(repository != primary, stage, task_id,
+                "evidence_repository_matches_primary", f"{field}.repository_path")
+        require(repository not in seen, stage, task_id,
+                "duplicate_evidence_repository", f"{field}.repository_path")
+        seen.add(repository)
+        baseline = string_list(row["baseline_worktree_status"], stage, task_id,
+                               f"{field}.baseline_worktree_status")
+        specs.append((repository, baseline))
+    return specs
+
+
 def repository_fingerprint(repository: Path, stage: str, task_id: str) -> str:
     digest = hashlib.sha256()
     head = subprocess.run(
@@ -361,7 +405,10 @@ def validate_scope(value: object, stage: str = "init", task_id: str = "scope") -
     keys = {"schema_version", "repository_path", "review_kind", "target", "comparison_base",
             "topic", "output_language", "exclusions", "instruction_files", "finding_standard",
             "baseline_worktree_status"}
-    mapping = exact_keys(value, keys, stage, task_id, "$")
+    optional = {"evidence_repositories"}
+    require(isinstance(value, dict), stage, task_id, "invalid_type", "$")
+    present_optional = optional & set(value)
+    mapping = exact_keys(value, keys | present_optional, stage, task_id, "$")
     require(mapping["schema_version"] == SCHEMA_VERSION, stage, task_id,
             "invalid_version", "$.schema_version")
     repository_path = nonempty_string(
@@ -418,6 +465,7 @@ def validate_scope(value: object, stage: str = "init", task_id: str = "scope") -
                 "instruction_file_unreadable", field)
     nonempty_string(mapping["finding_standard"], stage, task_id, "$.finding_standard")
     string_list(mapping["baseline_worktree_status"], stage, task_id, "$.baseline_worktree_status")
+    evidence_repository_specs(mapping, stage, task_id)
 
 
 def require_worktree_unchanged(scope: dict, stage: str, task_id: str) -> None:
@@ -436,6 +484,32 @@ def require_worktree_unchanged(scope: dict, stage: str, task_id: str) -> None:
             repository_fingerprint(repository, stage, task_id) == expected_fingerprint,
             stage, task_id, "repository_snapshot_changed", "$.repository_fingerprint",
         )
+    evidence_specs = evidence_repository_specs(scope, stage, task_id)
+    for index, (evidence_repository, baseline) in enumerate(evidence_specs):
+        field = f"$.evidence_repositories[{index}]"
+        actual = git_worktree_status(evidence_repository, stage, task_id)
+        require(actual == baseline, stage, task_id,
+                "evidence_repository_worktree_changed",
+                f"{field}.baseline_worktree_status")
+    if STATE_PATH.exists():
+        expected_evidence_fingerprints = state.get("evidence_repository_fingerprints", {})
+        require(isinstance(expected_evidence_fingerprints, dict), stage, task_id,
+                "missing_evidence_repository_fingerprints",
+                "$.evidence_repository_fingerprints")
+        current_paths = {str(repository) for repository, _ in evidence_specs}
+        require(set(expected_evidence_fingerprints) == current_paths, stage, task_id,
+                "evidence_repository_set_changed",
+                "$.evidence_repository_fingerprints")
+        for index, (evidence_repository, _) in enumerate(evidence_specs):
+            expected = nonempty_string(
+                expected_evidence_fingerprints.get(str(evidence_repository)), stage, task_id,
+                f"$.evidence_repository_fingerprints[{evidence_repository}]",
+            )
+            require(
+                repository_fingerprint(evidence_repository, stage, task_id) == expected,
+                stage, task_id, "evidence_repository_snapshot_changed",
+                f"$.evidence_repositories[{index}]",
+            )
 
 
 def validate_lenses(value: object) -> None:
@@ -1287,6 +1361,66 @@ def artifact_record_count(stage: str, artifact: dict) -> int:
     return len(artifact["results"])
 
 
+def validate_supporting_locations(scope: dict, evidence: list[dict],
+                                  qualification: dict | None, field: str,
+                                  stage: str, task_id: str) -> None:
+    for index, item in enumerate(evidence):
+        location = item.get("location")
+        if location is None:
+            continue
+        location_field = f"{field}.evidence[{index}].location"
+        line_count = location_line_count(
+            scope, location, location_field, allow_evidence=True,
+            stage=stage, task_id=task_id,
+        )
+        require(location["end_line"] <= line_count, stage, task_id,
+                "evidence_line_out_of_range", location_field)
+    if qualification is None:
+        return
+    for index, step in enumerate(qualification["reachability_path"]):
+        location_field = f"{field}.qualification.reachability_path[{index}].location"
+        location = step["location"]
+        line_count = location_line_count(
+            scope, location, location_field, allow_evidence=True,
+            stage=stage, task_id=task_id,
+        )
+        require(location["end_line"] <= line_count, stage, task_id,
+                "reachability_line_out_of_range", location_field)
+
+
+def validate_artifact_supporting_locations(packet: dict, artifact: dict,
+                                            scope: dict) -> None:
+    stage = packet["stage"]
+    task_id = packet["task_id"]
+    if stage == "adversarial":
+        for index, finding in enumerate(artifact["candidates"]):
+            validate_supporting_locations(
+                scope, finding["evidence"], None, f"$.candidates[{index}]",
+                stage, task_id,
+            )
+    elif stage == "dedup":
+        for index, candidate in enumerate(artifact["canonical_candidates"]):
+            finding = candidate["finding"]
+            validate_supporting_locations(
+                scope, finding["evidence"], None,
+                f"$.canonical_candidates[{index}].finding", stage, task_id,
+            )
+    else:
+        for index, result in enumerate(artifact["results"]):
+            field = f"$.results[{index}]"
+            validate_supporting_locations(
+                scope, result["evidence"], result["qualification"], field,
+                stage, task_id,
+            )
+            finding_key = "replacement_finding" if stage == "refutation" else "final_finding"
+            finding = result[finding_key]
+            if finding is not None:
+                validate_supporting_locations(
+                    scope, finding["evidence"], None, f"{field}.{finding_key}",
+                    stage, task_id,
+                )
+
+
 def validate_packet_artifact(packet: dict, artifact: dict, state: dict) -> None:
     stage = packet["stage"]
     scope = read_json(SCOPE_PATH, stage, packet["task_id"])
@@ -1299,6 +1433,7 @@ def validate_packet_artifact(packet: dict, artifact: dict, state: dict) -> None:
         validate_refutation(packet, artifact, scope)
     else:
         validate_judgment(packet, artifact, scope)
+    validate_artifact_supporting_locations(packet, artifact, scope)
 
 
 def require_current_packet(state: dict, packet_path: Path, packet: dict) -> None:
@@ -1401,6 +1536,10 @@ def command_init() -> None:
         "repository_fingerprint": repository_fingerprint(
             load_bound_repository("init", "scope"), "init", "scope"
         ),
+        "evidence_repository_fingerprints": {
+            str(repository): repository_fingerprint(repository, "init", "scope")
+            for repository, _ in evidence_repository_specs(scope, "init", "scope")
+        },
     }
     for reviewer in lenses["reviewers"]:
         instructions = render_stage_instructions(
@@ -1818,26 +1957,46 @@ def command_status() -> None:
         print(f"FINAL {ROOT / 'final' / 'final.json'}")
 
 
-def repository_location(scope: dict, location: dict, field: str) -> tuple[Path, Path, Path]:
-    stage = "validate-final"
-    task_id = "final"
-    repository = load_bound_repository(stage, task_id)
+def repository_location(scope: dict, location: dict, field: str, *,
+                        allow_evidence: bool = False,
+                        stage: str = "validate-final",
+                        task_id: str = "final") -> tuple[Path, Path, Path]:
+    primary_repository = load_bound_repository(stage, task_id)
     raw_path = Path(location["path"])
     candidate = raw_path.resolve(strict=False) if raw_path.is_absolute() else (
-        repository / raw_path
+        primary_repository / raw_path
     ).resolve(strict=False)
-    try:
-        candidate.relative_to(repository)
-    except ValueError as exc:
-        raise ValidationError(stage, task_id, "source_path_outside_repository", [field]) from exc
-    relative_path = candidate.relative_to(repository)
-    return repository, relative_path, candidate
+    repositories = [primary_repository]
+    if allow_evidence:
+        repositories.extend(
+            repository for repository, _ in evidence_repository_specs(scope, stage, task_id)
+        )
+    repositories.sort(key=lambda repository: len(repository.parts), reverse=True)
+    for repository in repositories:
+        try:
+            relative_path = candidate.relative_to(repository)
+            if repository != primary_repository:
+                require(raw_path.is_absolute(), stage, task_id,
+                        "cross_repository_path_not_absolute", field)
+                require(location["side"] == "new", stage, task_id,
+                        "cross_repository_old_location_unsupported", f"{field}.side")
+            return repository, relative_path, candidate
+        except ValueError:
+            continue
+    code = "evidence_path_outside_declared_repositories" if allow_evidence else (
+        "source_path_outside_repository"
+    )
+    raise ValidationError(stage, task_id, code, [field])
 
 
-def location_line_count(scope: dict, location: dict, field: str) -> int:
-    stage = "validate-final"
-    task_id = "final"
-    repository, relative_path, candidate = repository_location(scope, location, field)
+def location_line_count(scope: dict, location: dict, field: str, *,
+                        allow_evidence: bool = False,
+                        stage: str = "validate-final",
+                        task_id: str = "final") -> int:
+    repository, relative_path, candidate = repository_location(
+        scope, location, field, allow_evidence=allow_evidence,
+        stage=stage, task_id=task_id,
+    )
     if location["side"] == "new":
         require(candidate.is_file(), stage, task_id, "source_path_missing", field)
         with candidate.open("r", encoding="utf-8", errors="replace") as handle:
@@ -1872,13 +2031,15 @@ def parse_changed_line_ranges(diff_text: str, side: str) -> list[tuple[int, int]
     return ranges
 
 
-def require_location_overlaps_change(scope: dict, finding: dict, field: str) -> None:
+def require_location_overlaps_change(scope: dict, finding: dict, field: str, *,
+                                     stage: str = "validate-final",
+                                     task_id: str = "final") -> None:
     if scope["review_kind"] != "change":
         return
-    stage = "validate-final"
-    task_id = "final"
     location = finding["location"]
-    repository, relative_path, _ = repository_location(scope, location, field)
+    repository, relative_path, _ = repository_location(
+        scope, location, field, stage=stage, task_id=task_id
+    )
     try:
         result = subprocess.run(
             [
@@ -1974,7 +2135,9 @@ def command_validate_final() -> None:
             if evidence.get("location") is not None:
                 located_evidence.append((f"{prefix}[{index}].location", evidence))
     for field, evidence in located_evidence:
-        line_count = location_line_count(final["scope"], evidence["location"], field)
+        line_count = location_line_count(
+            final["scope"], evidence["location"], field, allow_evidence=True
+        )
         require(evidence["location"]["end_line"] <= line_count,
                 "validate-final", "final", "evidence_line_out_of_range", field)
     qualification_sources: list[tuple[str, dict]] = []
@@ -1988,7 +2151,9 @@ def command_validate_final() -> None:
     for prefix, qualification in qualification_sources:
         for index, step in enumerate(qualification["reachability_path"]):
             field = f"{prefix}.reachability_path[{index}].location"
-            line_count = location_line_count(final["scope"], step["location"], field)
+            line_count = location_line_count(
+                final["scope"], step["location"], field, allow_evidence=True
+            )
             require(step["location"]["end_line"] <= line_count,
                     "validate-final", "final", "reachability_line_out_of_range", field)
     print(
