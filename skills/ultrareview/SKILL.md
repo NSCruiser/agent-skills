@@ -1,6 +1,6 @@
 ---
 name: ultrareview
-description: Run a read-only adversarial code review through independent review, deduplication, Ponytail-guided refutation, and selective final judgment. Use only when the user explicitly requests Ultrareview for a bounded code change or topic and the runtime can launch isolated workers. Do not use for ordinary implementation, unbounded repository audits, or implicit follow-up review.
+description: Run a read-only adversarial code review through independent review, deduplication, refutation, and final judgment. Use only when the user explicitly requests Ultrareview for a bounded code change or topic and the runtime can launch isolated workers. Do not use for ordinary implementation, unbounded repository audits, or implicit follow-up review.
 ---
 
 # Ultrareview
@@ -18,7 +18,7 @@ The workflow has exactly one semantic round in each applicable stage:
 1. Independent adversarial review through useful, non-overlapping lenses.
 2. One fresh deduplicator that merges only true duplicates and never decides validity.
 3. Fresh refuters covering every canonical candidate exactly once.
-4. Fresh judges independently deciding only candidates whose refuter returned `modify`, `refute`, or `unresolved`. A refuter `uphold` is binding and bypasses judgment.
+4. Fresh judges independently deciding every canonical candidate exactly once.
 
 Do not add another review round, extra refuters, extra judges, or a second Ultrareview run automatically. Workers within one stage may run in parallel. The coordinator balances candidate IDs across the selected worker count so the stage still completes in one round.
 
@@ -35,22 +35,18 @@ In Codex, launch packet workers with `spawn_agent`, prefer `fork_turns: "none"`,
 Create the isolated run directory with the packaged bootstrap rather than writing a coordinator:
 
 ```bash
-python3 <skill-root>/scripts/bootstrap_run.py \
-  --repository <repository-path> \
-  --ponytail-review-skill <current-ponytail-review-SKILL.md>
+python3 <skill-root>/scripts/bootstrap_run.py --repository <repository-path>
 ```
 
-Resolve the currently active `ponytail-review` skill from the harness's available skill catalog. Stop before bootstrap and report the missing dependency when it is unavailable; do not substitute copied Ponytail prose or a versioned cache path. The bootstrap snapshots that `SKILL.md` under the run directory so future runs pick up plugin updates while an active run stays reproducible.
-
-The bootstrap creates the fixed directory layout outside the repository, records the resolved `--repository` in `repository.json`, and copies `pipeline.py`, the frozen Ponytail policy, the v5 Schema, and stage instruction templates. The orchestrator then writes only the run-specific `scope.json` and `lenses.json` reported by the bootstrap.
+The bootstrap creates the fixed directory layout outside the repository, records the resolved `--repository` in `repository.json`, and copies `pipeline.py`, the v4 Schema, and stage instruction templates. The orchestrator then writes only the run-specific `scope.json` and `lenses.json` reported by the bootstrap.
 
 `scope.json` must precisely define the authorized change or topic, output language, exclusions, applicable instruction files, finding standard, and baseline worktree status. Set `output_language` to the language explicitly requested by the user, or otherwise the language of the user's request. Write human-readable scope, lane, and focus text in that language. Its absolute `repository_path` must match `repository.json`. Record `baseline_worktree_status` immediately before `init` as the exact output lines from `git -C <repository-path> status --short --untracked-files=all`.
 
 When callers, contracts, or implementation details needed as supporting evidence live in another Git repository, add that repository root to optional `evidence_repositories` as `{ "repository_path": <absolute-root>, "baseline_worktree_status": [...] }`. Record each status with the same command immediately before `init`. Finding locations remain in the reviewed repository; cross-repository evidence and reachability locations must be absolute, current-side paths inside a declared evidence repository. Cite other external material with `location: null` and a concrete reference. The coordinator freezes every declared evidence repository's HEAD, staged and unstaged diff, and untracked contents just like the reviewed repository.
 
-`lenses.json` must split the scope into useful lanes without inventing additional scope. Use `schema_version: 5` for both.
+`lenses.json` must split the scope into useful lanes without inventing additional scope. Use `schema_version: 4` for both.
 
-At `init`, the coordinator fixes hashes for `scope.json`, `lenses.json`, `repository.json`, the frozen Ponytail policy, the Schema, stage instructions, and the copied pipeline, and fingerprints the reviewed repository plus every declared evidence repository. Any later change to scope, output language, lenses, Ponytail policy, repository snapshots, or another runtime contract resource invalidates the run; start a newly authorized semantic run instead of editing an active one.
+At `init`, the coordinator fixes hashes for `scope.json`, `lenses.json`, `repository.json`, the Schema, stage instructions, and the copied pipeline, and fingerprints the reviewed repository plus every declared evidence repository. Any later change to scope, output language, lenses, repository snapshots, or another runtime contract resource invalidates the run; start a newly authorized semantic run instead of editing an active one.
 
 The coordinator rejects Git-visible worktree drift before artifact validation, stage transitions, retries, finalization, and final validation. Treat a mismatch as an incomplete review; report it and do not restore or alter the repository. Use a genuinely read-only filesystem sandbox when the harness offers one because Git status detection does not prevent writes or cover ignored files.
 
@@ -86,11 +82,11 @@ Report a candidate only when all of these are true:
 
 Exclude speculative concerns, pre-existing problems, intentional behavior changes, style nits that do not obscure behavior, dead or unreachable paths, test-only paths outside scope, unsupported configurations, states blocked by existing guards, completed migrations, and remedies whose complexity or maintenance cost outweighs their likely value. Continue through the complete assigned scope after finding an issue; do not stop at the first candidate.
 
-Refuters and judges must record the v5 `qualification` gate and `ponytail_assessment`. Refuters actively use the frozen Ponytail policy to decide whether a finding is over-defensive or its proposed remedy is over-engineered. Judges independently repeat that assessment only for challenged candidates. A result is actionable only when reachability, authorized scope, material impact, fix value, and likely author action all pass, and change reviews also prove introduction by the reviewed diff. A disqualifying value binds to refute/reject; uncertainty binds to unresolved. Uphold and modify require verified reachability evidence from a caller, test, command, or contract. The coordinator rejects artifacts whose verdict contradicts these gates.
+Refuters and judges must record the v4 `qualification` gate. A result is actionable only when reachability, authorized scope, material impact, fix value, and likely author action all pass, and change reviews also prove introduction by the reviewed diff. A disqualifying value binds to refute/reject; uncertainty binds to unresolved. Uphold and modify require verified reachability evidence from a caller, test, command, or contract. The coordinator rejects artifacts whose verdict contradicts these gates.
 
 Every finding must include a concrete, intuitive `manifestation` that a human unfamiliar with the call path can follow. Use `verified_reproduction` only when the sequence was actually exercised and the finding includes verified `test` or `command` evidence; otherwise use `reasoned_scenario` and do not imply experimental verification. State the real setup, ordered user/system actions, and the exact visible or observable failure. Do not merely restate the trigger or impact in more words, and do not use placeholders such as “the issue occurs.” Use `location.side: new` for added or current lines and `location.side: old` for deletion-only lines from the comparison base.
 
-For a change review, inspect the complete merge-relevant diff plus enough surrounding source, tests, callers, and declared cross-repository evidence to show that each finding was introduced by the change. For a base-branch target, resolve its configured upstream when that upstream exists and is ahead of the local branch; otherwise use the local branch, compute `git merge-base HEAD <comparison-ref>`, and store the resulting full immutable commit OID in `scope.comparison_base`. Symbolic refs and short OIDs are rejected. If the local branch cannot be resolved, try its configured upstream explicitly before declaring the target unavailable. Cite a tight finding range inside the reviewed repository that overlaps the diff; cross-repository paths may support the finding but may not become its primary location. For a topic review, require the issue to fall inside the named scope.
+For a change review, inspect the complete merge-relevant diff plus enough surrounding source, tests, callers, and declared cross-repository evidence to show that each finding was introduced by the change. For a base-branch target, resolve its configured upstream when that upstream exists and is ahead of the local branch; otherwise use the local branch, compute `git merge-base HEAD <comparison-ref>`, and store the resulting full immutable commit OID in `scope.comparison_base`. Symbolic refs and short OIDs are rejected. If the local branch cannot be resolved, try its configured upstream explicitly before declaring the target unavailable. Use the primary finding location for the tight changed range that introduces the failing trigger, state, call, contract, configuration, or deletion. When the failure manifests in unchanged historical code, cite that code as supporting evidence rather than the primary location. Cross-repository paths may support the finding but may not become its primary location. For a topic review, require the issue to fall inside the named scope.
 
 Use `P0` for universal release blockers or critical failures, `P1` for urgent defects, and `P2` for ordinary defects the author is likely to fix now. Do not emit low-impact advisory findings. Preserve exact evidence and distinguish verified facts from inference.
 
@@ -99,7 +95,6 @@ Use `P0` for universal release blockers or critical failures, `P1` for urgent de
 There is no automatic retry. When a worker or transition fails, the orchestrator explicitly chooses to retry the failed task, rerun the incomplete stage, or stop and report an incomplete review. Do not advance past an incomplete stage. Use `retry-packet` so every retry receives a new task ID, attempt, packet, and output path; never reuse a stale artifact.
 
 An operational retry repairs execution and does not solicit another semantic opinion. Do not convert an execution failure into a coverage gap.
-Only a valid semantic `uphold` bypasses judgment. A failed or missing refutation artifact leaves the review incomplete and never counts as an uphold.
 
 ## Final verification and response
 
@@ -118,11 +113,11 @@ Explain each finding at an ELI5 level: use short sentences, everyday cause-and-e
 1. Where the code runs and how a real user or system reaches it.
 2. A verified reproduction or reasoned scenario with setup, ordered steps, and the exact observable failure.
 3. What the user or system experiences and why it matters.
-4. The binding refuter or judge basis, the smallest proportionate fix, and a focused verification.
+4. The judge's decisive basis, the smallest proportionate fix, and a focused verification.
 
 When the refuter verdict is `uphold`, omit the independent-challenge section by default because the independent check agreed with the finding. When the refuter returned `modify`, `refute`, or `unresolved` but the judge retained a finding, include the strongest challenge and explain in plain language how the judge resolved it.
 
-Use the matching `review_records` entry as the audit source for every candidate. Its `case_for` preserves the original positive case, `challenge` preserves the independent counter-analysis, Ponytail assessment, and evidence, and `final_judgment` records whether the binding source was refutation or judgment. Do not collapse these into an unsupported one-line conclusion.
+Use the matching `review_records` entry as the audit source for every candidate. Its `case_for` preserves the original positive case, `challenge` preserves the independent counter-analysis and evidence, and `final_judgment` preserves the binding basis and evidence. Do not collapse these into an unsupported one-line conclusion.
 
 Do not expand rejected candidates in the normal response. Report only their count and concise rejection-reason categories in `scope.output_language`; keep their complete audit trail in `final.json`. Expand them only when the user asks.
 

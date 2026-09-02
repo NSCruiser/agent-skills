@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Portable Ultrareview pipeline schemas version 5",
+  "title": "Portable Ultrareview pipeline schemas version 4",
   "oneOf": [
     { "$ref": "#/$defs/scope" },
     { "$ref": "#/$defs/lenses" },
@@ -116,24 +116,6 @@
           }
         }
       ]
-    },
-    "ponytail_assessment": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["conclusion", "basis", "smallest_proportionate_outcome"],
-      "properties": {
-        "conclusion": {
-          "enum": [
-            "lean",
-            "over_engineered",
-            "over_defensive",
-            "mixed",
-            "unclear"
-          ]
-        },
-        "basis": { "type": "string", "minLength": 1 },
-        "smallest_proportionate_outcome": { "type": "string", "minLength": 1 }
-      }
     },
     "finding": {
       "type": "object",
@@ -258,7 +240,7 @@
         "baseline_worktree_status"
       ],
       "properties": {
-        "schema_version": { "const": 5 },
+        "schema_version": { "const": 4 },
         "repository_path": { "type": "string", "minLength": 1 },
         "review_kind": { "enum": ["change", "topic"] },
         "target": { "type": "string", "minLength": 1 },
@@ -327,7 +309,7 @@
       "additionalProperties": false,
       "required": ["schema_version", "reviewers"],
       "properties": {
-        "schema_version": { "const": 5 },
+        "schema_version": { "const": 4 },
         "reviewers": {
           "type": "array",
           "minItems": 1,
@@ -358,7 +340,7 @@
         "no_delegate"
       ],
       "properties": {
-        "schema_version": { "const": 5 },
+        "schema_version": { "const": 4 },
         "stage": {
           "enum": ["adversarial", "dedup", "refutation", "judgment"]
         },
@@ -474,7 +456,7 @@
         "candidates"
       ],
       "properties": {
-        "schema_version": { "const": 5 },
+        "schema_version": { "const": 4 },
         "stage": { "const": "adversarial" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -514,7 +496,7 @@
         "canonical_candidates"
       ],
       "properties": {
-        "schema_version": { "const": 5 },
+        "schema_version": { "const": 4 },
         "stage": { "const": "dedup" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -535,7 +517,6 @@
         "qualification",
         "correctness_analysis",
         "proportionality_analysis",
-        "ponytail_assessment",
         "evidence",
         "replacement_finding",
         "residual_uncertainty"
@@ -546,7 +527,6 @@
         "qualification": { "$ref": "#/$defs/qualification" },
         "correctness_analysis": { "type": "string", "minLength": 1 },
         "proportionality_analysis": { "type": "string", "minLength": 1 },
-        "ponytail_assessment": { "$ref": "#/$defs/ponytail_assessment" },
         "evidence": {
           "type": "array",
           "items": { "$ref": "#/$defs/evidence" }
@@ -590,7 +570,7 @@
         "results"
       ],
       "properties": {
-        "schema_version": { "const": 5 },
+        "schema_version": { "const": 4 },
         "stage": { "const": "refutation" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -610,7 +590,6 @@
         "verdict",
         "qualification",
         "resolved_points",
-        "ponytail_assessment",
         "evidence",
         "final_finding",
         "residual_risk"
@@ -624,7 +603,6 @@
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
         },
-        "ponytail_assessment": { "$ref": "#/$defs/ponytail_assessment" },
         "evidence": {
           "type": "array",
           "items": { "$ref": "#/$defs/evidence" }
@@ -679,7 +657,7 @@
         "results"
       ],
       "properties": {
-        "schema_version": { "const": 5 },
+        "schema_version": { "const": 4 },
         "stage": { "const": "judgment" },
         "task_id": { "type": "string", "minLength": 1 },
         "attempt": { "type": "integer", "minimum": 1 },
@@ -784,7 +762,6 @@
         "qualification",
         "correctness_analysis",
         "proportionality_analysis",
-        "ponytail_assessment",
         "evidence",
         "proposed_finding",
         "residual_uncertainty"
@@ -794,7 +771,6 @@
         "qualification": { "$ref": "#/$defs/qualification" },
         "correctness_analysis": { "type": "string", "minLength": 1 },
         "proportionality_analysis": { "type": "string", "minLength": 1 },
-        "ponytail_assessment": { "$ref": "#/$defs/ponytail_assessment" },
         "evidence": {
           "type": "array",
           "items": { "$ref": "#/$defs/evidence" }
@@ -830,11 +806,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "source", "verdict", "qualification", "basis", "ponytail_assessment",
-        "evidence", "residual_risk"
+        "source", "verdict", "qualification", "basis", "evidence", "residual_risk"
       ],
       "properties": {
-        "source": { "enum": ["refutation", "judgment"] },
+        "source": { "const": "judgment" },
         "verdict": { "enum": ["uphold", "modify", "reject", "unresolved"] },
         "qualification": { "$ref": "#/$defs/qualification" },
         "basis": {
@@ -842,7 +817,6 @@
           "minItems": 1,
           "items": { "type": "string", "minLength": 1 }
         },
-        "ponytail_assessment": { "$ref": "#/$defs/ponytail_assessment" },
         "evidence": {
           "type": "array",
           "items": { "$ref": "#/$defs/evidence" }
@@ -850,15 +824,6 @@
         "residual_risk": { "type": "string" }
       },
       "allOf": [
-        {
-          "if": {
-            "properties": { "source": { "const": "refutation" } },
-            "required": ["source"]
-          },
-          "then": {
-            "properties": { "verdict": { "const": "uphold" } }
-          }
-        },
         {
           "if": {
             "properties": { "verdict": { "const": "unresolved" } },
@@ -904,7 +869,7 @@
         "trace"
       ],
       "properties": {
-        "schema_version": { "const": 5 },
+        "schema_version": { "const": 4 },
         "scope": { "$ref": "#/$defs/scope" },
         "findings": {
           "type": "array",

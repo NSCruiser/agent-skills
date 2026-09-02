@@ -26,12 +26,6 @@ class PipelineCase(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.repository = self.root / "repository"
         self.repository.mkdir()
-        self.ponytail_skill = self.root / "ponytail-review" / "SKILL.md"
-        self.ponytail_skill.parent.mkdir()
-        self.ponytail_skill.write_text(
-            "---\nname: ponytail-review\ndescription: Test policy.\n---\n\nPrefer less code.\n",
-            encoding="utf-8",
-        )
         (self.repository / "sample.py").write_text(
             "\n".join(f"line {index}" for index in range(1, 21)) + "\n",
             encoding="utf-8",
@@ -62,7 +56,7 @@ class PipelineCase(unittest.TestCase):
         self.scope_source = self.root / "prepared-scope.json"
         self.lenses_source = self.root / "prepared-lenses.json"
         write_json(self.scope_source, {
-            "schema_version": 5,
+            "schema_version": 4,
             "repository_path": str(self.repository),
             "review_kind": "topic",
             "target": "Synthetic persistence topic",
@@ -75,7 +69,7 @@ class PipelineCase(unittest.TestCase):
             "baseline_worktree_status": baseline,
         })
         write_json(self.lenses_source, {
-            "schema_version": 5,
+            "schema_version": 4,
             "reviewers": [{
                 "agent_id": "reviewer-01",
                 "lane": "state transitions",
@@ -86,7 +80,6 @@ class PipelineCase(unittest.TestCase):
         result = self.run_process(
             BOOTSTRAP,
             "--repository", str(self.repository),
-            "--ponytail-review-skill", str(self.ponytail_skill),
             "--run-root", str(self.run_root),
             "--scope", str(self.scope_source),
             "--lenses", str(self.lenses_source),
@@ -244,18 +237,11 @@ class PipelineCase(unittest.TestCase):
             "status": "verified",
         }
 
-    def ponytail_assessment(self, conclusion: str = "lean") -> dict:
-        return {
-            "conclusion": conclusion,
-            "basis": "The synthetic finding and remedy were checked against the frozen policy.",
-            "smallest_proportionate_outcome": "Keep only the smallest actionable change.",
-        }
-
     def write_adversarial(self, candidates: list[dict]) -> tuple[Path, Path]:
         packet_path, packet = self.one_packet("adversarial")
         artifact_path = Path(packet["output_path"])
         write_json(artifact_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "adversarial",
             "task_id": packet["task_id"],
             "attempt": packet["attempt"],
@@ -279,7 +265,7 @@ class PipelineCase(unittest.TestCase):
         self.assertIn("FINALIZED", result.stdout)
         self.command("validate-final")
         final = json.loads((self.run_root / "final" / "final.json").read_text(encoding="utf-8"))
-        self.assertEqual(final["schema_version"], 5)
+        self.assertEqual(final["schema_version"], 4)
         self.assertEqual(final["findings"], [])
         self.assertEqual(final["rejected_findings"], [])
         self.assertEqual(final["unresolved_findings"], [])
@@ -308,7 +294,6 @@ class PipelineCase(unittest.TestCase):
         result = self.run_process(
             BOOTSTRAP,
             "--repository", str(self.repository),
-            "--ponytail-review-skill", str(self.ponytail_skill),
             "--run-root", str(run_root),
         )
         self.assertIn("REPOSITORY_BINDING_PATH", result.stdout)
@@ -323,30 +308,11 @@ class PipelineCase(unittest.TestCase):
         initialized = self.run_process(run_root / "pipeline.py", "init")
         self.assertIn("STAGE_READY adversarial 1", initialized.stdout)
 
-    def test_bootstrap_rejects_non_ponytail_policy(self) -> None:
-        cases = (
-            ("plain", "not a skill\n", "invalid_frontmatter"),
-            ("wrong-name", "---\nname: another-skill\n---\n", "wrong_name"),
-        )
-        for label, content, reason in cases:
-            with self.subTest(label=label):
-                policy = self.root / f"{label}.md"
-                policy.write_text(content, encoding="utf-8")
-                failure = self.run_process(
-                    BOOTSTRAP,
-                    "--repository", str(self.repository),
-                    "--ponytail-review-skill", str(policy),
-                    "--run-root", str(self.root / f"{label}-run"),
-                    expected_code=1,
-                )
-                self.assertIn(f"ponytail_review_skill_{reason}", failure.stderr)
-
     def test_bootstrap_binding_rejects_mismatched_scope_repository(self) -> None:
         run_root = self.root / "mismatched-run"
         self.run_process(
             BOOTSTRAP,
             "--repository", str(self.repository),
-            "--ponytail-review-skill", str(self.ponytail_skill),
             "--run-root", str(run_root),
         )
         other_repository = self.root / "other-repository"
@@ -552,7 +518,7 @@ class PipelineCase(unittest.TestCase):
         dedup_path = Path(dedup_packet["output_path"])
         canonical = self.finding("F001")
         write_json(dedup_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "dedup",
             "task_id": dedup_packet["task_id"],
             "attempt": dedup_packet["attempt"],
@@ -567,13 +533,9 @@ class PipelineCase(unittest.TestCase):
         self.command("accept-dedup", "--workers", "3", str(dedup_path))
 
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
-        self.assertIn(
-            str(self.run_root / "policies" / "ponytail-review" / "SKILL.md"),
-            " ".join(refutation_packet["instructions"]),
-        )
         refutation_path = Path(refutation_packet["output_path"])
         write_json(refutation_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "refutation",
             "task_id": refutation_packet["task_id"],
             "attempt": refutation_packet["attempt"],
@@ -584,7 +546,6 @@ class PipelineCase(unittest.TestCase):
                 "qualification": self.qualification("reject"),
                 "correctness_analysis": "The synthetic call path is not reachable as claimed.",
                 "proportionality_analysis": "No remediation is justified for unreachable behavior.",
-                "ponytail_assessment": self.ponytail_assessment(),
                 "evidence": [],
                 "replacement_finding": None,
                 "residual_uncertainty": "",
@@ -597,7 +558,7 @@ class PipelineCase(unittest.TestCase):
         judgment_path = Path(judgment_packet["output_path"])
         reason = "Direct inspection confirms that the claimed call path is unreachable."
         write_json(judgment_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "judgment",
             "task_id": judgment_packet["task_id"],
             "attempt": judgment_packet["attempt"],
@@ -607,7 +568,6 @@ class PipelineCase(unittest.TestCase):
                 "verdict": "reject",
                 "qualification": self.qualification("reject"),
                 "resolved_points": [reason],
-                "ponytail_assessment": self.ponytail_assessment(),
                 "evidence": [],
                 "final_finding": None,
                 "residual_risk": "",
@@ -661,7 +621,7 @@ class PipelineCase(unittest.TestCase):
         canonical = self.finding("F001")
         canonical["evidence"].append(external_evidence)
         write_json(dedup_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "dedup",
             "task_id": dedup_packet["task_id"],
             "attempt": dedup_packet["attempt"],
@@ -680,7 +640,7 @@ class PipelineCase(unittest.TestCase):
         correctness = "The source path and state transition make the failure reachable."
         proportionality = "The persistent loss justifies the focused remediation."
         write_json(refutation_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "refutation",
             "task_id": refutation_packet["task_id"],
             "attempt": refutation_packet["attempt"],
@@ -691,25 +651,36 @@ class PipelineCase(unittest.TestCase):
                 "qualification": cross_qualification,
                 "correctness_analysis": correctness,
                 "proportionality_analysis": proportionality,
-                "ponytail_assessment": self.ponytail_assessment(),
                 "evidence": [self.reachability_evidence(), external_evidence],
                 "replacement_finding": None,
                 "residual_uncertainty": "",
             }],
         })
-        refutation_artifact = json.loads(refutation_path.read_text(encoding="utf-8"))
-        refutation_artifact["results"][0]["ponytail_assessment"]["conclusion"] = (
-            "over_defensive"
-        )
-        write_json(refutation_path, refutation_artifact)
-        mismatch = self.run_argv(refutation_packet["validation_command"], expected_code=2)
-        self.assertIn("ponytail_verdict_mismatch", mismatch.stdout)
-        refutation_artifact["results"][0]["ponytail_assessment"]["conclusion"] = "lean"
-        write_json(refutation_path, refutation_artifact)
         self.command("validate-artifact", str(refutation_packet_path), str(refutation_path))
-        accepted = self.command("accept-refutation", "--workers", "1", str(refutation_path))
-        self.assertIn("FINALIZED", accepted.stdout)
-        self.assertEqual(list((self.run_root / "packets" / "judgment").glob("*.json")), [])
+        self.command("accept-refutation", "--workers", "1", str(refutation_path))
+
+        judgment_packet_path, judgment_packet = self.one_packet("judgment")
+        judgment_path = Path(judgment_packet["output_path"])
+        judgment_basis = "Fresh caller inspection confirms the actionable failure."
+        write_json(judgment_path, {
+            "schema_version": 4,
+            "stage": "judgment",
+            "task_id": judgment_packet["task_id"],
+            "attempt": judgment_packet["attempt"],
+            "agent_id": judgment_packet["agent_id"],
+            "results": [{
+                "candidate_id": "F001",
+                "verdict": "uphold",
+                "qualification": cross_qualification,
+                "resolved_points": [judgment_basis],
+                "evidence": [self.reachability_evidence(), external_evidence],
+                "final_finding": None,
+                "residual_risk": "",
+            }],
+        })
+        self.command("validate-artifact", str(judgment_packet_path), str(judgment_path))
+        self.command("accept-judgment", str(judgment_path))
+        self.command("finalize")
         self.command("validate-final")
 
         final = json.loads((self.run_root / "final" / "final.json").read_text(encoding="utf-8"))
@@ -717,18 +688,17 @@ class PipelineCase(unittest.TestCase):
         record = final["review_records"][0]
         self.assertEqual(record["case_for"], canonical)
         self.assertEqual(record["challenge"]["verdict"], "uphold")
-        self.assertEqual(record["final_judgment"]["source"], "refutation")
-        self.assertEqual(record["final_judgment"]["basis"], [correctness, proportionality])
+        self.assertEqual(record["final_judgment"]["source"], "judgment")
+        self.assertEqual(record["final_judgment"]["basis"], [judgment_basis])
         self.assertEqual(record["presented_finding"], canonical)
-        self.assertEqual(final["trace"]["judgment_results"], 0)
 
-        final["review_records"][0]["final_judgment"]["source"] = "judgment"
+        final["review_records"][0]["final_judgment"]["source"] = "refutation"
         final_path = self.run_root / "final" / "final.json"
         write_json(final_path, final)
         mismatch = self.command("validate-final", expected_code=2)
-        self.assertIn("unnecessary_judgment", mismatch.stdout)
+        self.assertIn("invalid_judgment_source", mismatch.stdout)
 
-    def test_selective_judgment_routes_only_challenged_candidates(self) -> None:
+    def test_judgment_uphold_and_modify_preserve_final_basis_and_selected_finding(self) -> None:
         self.command("init")
         raw_one = self.finding("reviewer-01:C01")
         raw_two = self.finding("reviewer-01:C02")
@@ -740,7 +710,7 @@ class PipelineCase(unittest.TestCase):
         canonical_one = self.finding("F001")
         canonical_two = self.finding("F002")
         write_json(dedup_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "dedup",
             "task_id": dedup_packet["task_id"],
             "attempt": dedup_packet["attempt"],
@@ -764,7 +734,7 @@ class PipelineCase(unittest.TestCase):
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
         refutation_path = Path(refutation_packet["output_path"])
         write_json(refutation_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "refutation",
             "task_id": refutation_packet["task_id"],
             "attempt": refutation_packet["attempt"],
@@ -772,12 +742,11 @@ class PipelineCase(unittest.TestCase):
             "results": [
                 {
                     "candidate_id": "F001",
-                    "verdict": "uphold",
-                    "qualification": self.qualification(),
-                    "correctness_analysis": "The first call path is reachable as reported.",
-                    "proportionality_analysis": "The first focused fix is proportionate.",
-                    "ponytail_assessment": self.ponytail_assessment(),
-                    "evidence": [self.reachability_evidence()],
+                    "verdict": "refute",
+                    "qualification": self.qualification("reject"),
+                    "correctness_analysis": "The first call path initially appears unreachable.",
+                    "proportionality_analysis": "No change would be justified if it were unreachable.",
+                    "evidence": [],
                     "replacement_finding": None,
                     "residual_uncertainty": "",
                 },
@@ -787,7 +756,6 @@ class PipelineCase(unittest.TestCase):
                     "qualification": self.qualification("reject"),
                     "correctness_analysis": "The second manifestation overstates the observed failure.",
                     "proportionality_analysis": "The remedy should match the corrected impact.",
-                    "ponytail_assessment": self.ponytail_assessment(),
                     "evidence": [],
                     "replacement_finding": None,
                     "residual_uncertainty": "",
@@ -798,42 +766,41 @@ class PipelineCase(unittest.TestCase):
         self.command("accept-refutation", "--workers", "1", str(refutation_path))
 
         judgment_packet_path, judgment_packet = self.one_packet("judgment")
-        self.assertEqual(judgment_packet["assigned_ids"], ["F002"])
-        self.assertIn(
-            str(self.run_root / "policies" / "ponytail-review" / "SKILL.md"),
-            " ".join(judgment_packet["instructions"]),
-        )
         judgment_path = Path(judgment_packet["output_path"])
         modified = self.finding("F002")
         modified["title"] = "Synthetic persistent state can become stale"
         modified["manifestation"]["failure"] = (
             "The reloaded record still shows value 100 after the source has changed to 125."
         )
+        uphold_basis = "Caller inspection confirms that the first call path is reachable."
         modify_basis = "The second issue survives with a corrected stale-value manifestation."
         write_json(judgment_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "judgment",
             "task_id": judgment_packet["task_id"],
             "attempt": judgment_packet["attempt"],
             "agent_id": judgment_packet["agent_id"],
-            "results": [{
+            "results": [
+                {
+                    "candidate_id": "F001",
+                    "verdict": "uphold",
+                    "qualification": self.qualification(),
+                    "resolved_points": [uphold_basis],
+                    "evidence": [self.reachability_evidence()],
+                    "final_finding": None,
+                    "residual_risk": "",
+                },
+                {
                     "candidate_id": "F002",
                     "verdict": "modify",
                     "qualification": self.qualification(),
                     "resolved_points": [modify_basis],
-                    "ponytail_assessment": self.ponytail_assessment(),
                     "evidence": [self.reachability_evidence()],
                     "final_finding": modified,
                     "residual_risk": "",
-            }],
+                },
+            ],
         })
-        judgment_artifact = json.loads(judgment_path.read_text(encoding="utf-8"))
-        judgment_artifact["results"][0]["ponytail_assessment"]["conclusion"] = "unclear"
-        write_json(judgment_path, judgment_artifact)
-        mismatch = self.run_argv(judgment_packet["validation_command"], expected_code=2)
-        self.assertIn("ponytail_fix_value_mismatch", mismatch.stdout)
-        judgment_artifact["results"][0]["ponytail_assessment"]["conclusion"] = "lean"
-        write_json(judgment_path, judgment_artifact)
         self.command("validate-artifact", str(judgment_packet_path), str(judgment_path))
         self.command("accept-judgment", str(judgment_path))
         self.command("finalize")
@@ -842,13 +809,11 @@ class PipelineCase(unittest.TestCase):
         final = json.loads((self.run_root / "final" / "final.json").read_text(encoding="utf-8"))
         records = {record["candidate_id"]: record for record in final["review_records"]}
         self.assertEqual(records["F001"]["final_judgment"]["verdict"], "uphold")
-        self.assertEqual(records["F001"]["final_judgment"]["source"], "refutation")
+        self.assertEqual(records["F001"]["final_judgment"]["basis"], [uphold_basis])
         self.assertEqual(records["F001"]["presented_finding"], canonical_one)
         self.assertEqual(records["F002"]["final_judgment"]["verdict"], "modify")
-        self.assertEqual(records["F002"]["final_judgment"]["source"], "judgment")
         self.assertEqual(records["F002"]["final_judgment"]["basis"], [modify_basis])
         self.assertEqual(records["F002"]["presented_finding"], modified)
-        self.assertEqual(final["trace"]["judgment_results"], 1)
 
         final_path = self.run_root / "final" / "final.json"
         final = json.loads(final_path.read_text(encoding="utf-8"))
@@ -868,7 +833,7 @@ class PipelineCase(unittest.TestCase):
         dedup_path = Path(dedup_packet["output_path"])
         canonical = self.finding("F001")
         write_json(dedup_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "dedup",
             "task_id": dedup_packet["task_id"],
             "attempt": dedup_packet["attempt"],
@@ -891,7 +856,7 @@ class PipelineCase(unittest.TestCase):
             "The reloaded record still contains value 100 instead of the new value 125."
         )
         write_json(refutation_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "refutation",
             "task_id": refutation_packet["task_id"],
             "attempt": refutation_packet["attempt"],
@@ -902,7 +867,6 @@ class PipelineCase(unittest.TestCase):
                 "qualification": self.qualification(),
                 "correctness_analysis": "The defect is stale state rather than lost state.",
                 "proportionality_analysis": "A focused refresh fix remains proportionate.",
-                "ponytail_assessment": self.ponytail_assessment(),
                 "evidence": [self.reachability_evidence()],
                 "replacement_finding": replacement,
                 "residual_uncertainty": "",
@@ -916,7 +880,7 @@ class PipelineCase(unittest.TestCase):
         judgment_packet_path, judgment_packet = self.one_packet("judgment")
         judgment_path = Path(judgment_packet["output_path"])
         write_json(judgment_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "judgment",
             "task_id": judgment_packet["task_id"],
             "attempt": judgment_packet["attempt"],
@@ -926,7 +890,6 @@ class PipelineCase(unittest.TestCase):
                 "verdict": "uphold",
                 "qualification": self.qualification(),
                 "resolved_points": ["The corrected stale-state finding is actionable."],
-                "ponytail_assessment": self.ponytail_assessment(),
                 "evidence": [self.reachability_evidence()],
                 "final_finding": None,
                 "residual_risk": "",
@@ -957,7 +920,7 @@ class PipelineCase(unittest.TestCase):
         dedup_packet_path, dedup_packet = self.one_packet("dedup")
         dedup_path = Path(dedup_packet["output_path"])
         write_json(dedup_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "dedup",
             "task_id": dedup_packet["task_id"],
             "attempt": dedup_packet["attempt"],
@@ -981,7 +944,7 @@ class PipelineCase(unittest.TestCase):
             "If the path executes, reloading the record may omit the stored value 100."
         )
         write_json(refutation_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "refutation",
             "task_id": refutation_packet["task_id"],
             "attempt": refutation_packet["attempt"],
@@ -992,28 +955,18 @@ class PipelineCase(unittest.TestCase):
                 "qualification": self.qualification(),
                 "correctness_analysis": "The reviewed fixture and caller establish reachability.",
                 "proportionality_analysis": "The narrowed persistent-state fix is proportionate.",
-                "ponytail_assessment": self.ponytail_assessment(),
                 "evidence": [self.reachability_evidence()],
                 "replacement_finding": replacement,
                 "residual_uncertainty": "",
             }],
         })
-        refutation_artifact = json.loads(refutation_path.read_text(encoding="utf-8"))
-        refutation_artifact["results"][0]["ponytail_assessment"]["conclusion"] = "unclear"
-        write_json(refutation_path, refutation_artifact)
-        mismatch = self.run_argv(refutation_packet["validation_command"], expected_code=2)
-        self.assertIn("ponytail_fix_value_mismatch", mismatch.stdout)
-        refutation_artifact["results"][0]["ponytail_assessment"]["conclusion"] = "lean"
-        write_json(refutation_path, refutation_artifact)
         self.run_argv(refutation_packet["validation_command"])
         self.command("accept-refutation", "--workers", "1", str(refutation_path))
 
         judgment_packet_path, judgment_packet = self.one_packet("judgment")
         judgment_path = Path(judgment_packet["output_path"])
-        unresolved_qualification = self.qualification("unresolved")
-        unresolved_qualification["fix_value"] = "unclear"
         judgment = {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "judgment",
             "task_id": judgment_packet["task_id"],
             "attempt": judgment_packet["attempt"],
@@ -1021,9 +974,8 @@ class PipelineCase(unittest.TestCase):
             "results": [{
                 "candidate_id": "F001",
                 "verdict": "unresolved",
-                "qualification": unresolved_qualification,
+                "qualification": self.qualification("unresolved"),
                 "resolved_points": ["Available source does not reveal production configuration."],
-                "ponytail_assessment": self.ponytail_assessment("unclear"),
                 "evidence": [],
                 "final_finding": None,
                 "residual_risk": "",
@@ -1099,19 +1051,6 @@ class PipelineCase(unittest.TestCase):
         failure = self.command("status", expected_code=2)
         self.assertIn("runtime_contract_changed", failure.stdout)
 
-    def test_ponytail_policy_is_frozen_per_run_and_hashed(self) -> None:
-        frozen = self.run_root / "policies" / "ponytail-review" / "SKILL.md"
-        self.assertEqual(
-            frozen.read_text(encoding="utf-8"),
-            self.ponytail_skill.read_text(encoding="utf-8"),
-        )
-        self.command("init")
-        self.ponytail_skill.write_text("updated upstream policy\n", encoding="utf-8")
-        self.command("status")
-        frozen.write_text("mutated active policy\n", encoding="utf-8")
-        failure = self.command("status", expected_code=2)
-        self.assertIn("runtime_contract_changed", failure.stdout)
-
     def test_change_scope_requires_immutable_comparison_oid(self) -> None:
         for arguments in (
             ["config", "user.name", "Ultrareview Test"],
@@ -1176,7 +1115,7 @@ class PipelineCase(unittest.TestCase):
         failure = self.command("retry-packet", str(old_packet_path), expected_code=2)
         self.assertIn("invalid_phase", failure.stdout)
 
-    def test_deletion_only_change_accepts_old_side_finding(self) -> None:
+    def test_change_review_validates_primary_diff_location_and_accepts_old_side(self) -> None:
         for arguments in (
             ["config", "user.name", "Ultrareview Test"],
             ["config", "user.email", "ultrareview@example.invalid"],
@@ -1221,6 +1160,26 @@ class PipelineCase(unittest.TestCase):
         change_qualification["introduced_by_change"] = "yes"
 
         self.command("init")
+        _, packet = self.one_packet("adversarial")
+        invalid = self.finding("reviewer-01:C01")
+        artifact_path = Path(packet["output_path"])
+        write_json(artifact_path, {
+            "schema_version": 4,
+            "stage": "adversarial",
+            "task_id": packet["task_id"],
+            "attempt": packet["attempt"],
+            "agent_id": packet["agent_id"],
+            "lane": packet["lane"],
+            "coverage": {
+                "inspected_paths": ["sample.py"],
+                "checks_run": ["synthetic source inspection"],
+                "gaps": [],
+            },
+            "candidates": [invalid],
+        })
+        failure = self.run_argv(packet["validation_command"], expected_code=2)
+        self.assertIn("location_not_in_reviewed_change", failure.stdout)
+
         raw = self.finding("reviewer-01:C01")
         raw["location"] = {
             "path": "sample.py", "start_line": 2, "end_line": 2, "side": "old",
@@ -1233,7 +1192,7 @@ class PipelineCase(unittest.TestCase):
         canonical = self.finding("F001")
         canonical["location"] = raw["location"]
         write_json(dedup_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "dedup",
             "task_id": dedup_packet["task_id"],
             "attempt": dedup_packet["attempt"],
@@ -1250,7 +1209,7 @@ class PipelineCase(unittest.TestCase):
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
         refutation_path = Path(refutation_packet["output_path"])
         write_json(refutation_path, {
-            "schema_version": 5,
+            "schema_version": 4,
             "stage": "refutation",
             "task_id": refutation_packet["task_id"],
             "attempt": refutation_packet["attempt"],
@@ -1261,7 +1220,6 @@ class PipelineCase(unittest.TestCase):
                 "qualification": change_qualification,
                 "correctness_analysis": "The deleted line was required by the reachable path.",
                 "proportionality_analysis": "Restoring the line is a focused fix.",
-                "ponytail_assessment": self.ponytail_assessment(),
                 "evidence": [self.reachability_evidence()],
                 "replacement_finding": None,
                 "residual_uncertainty": "",
@@ -1269,59 +1227,53 @@ class PipelineCase(unittest.TestCase):
         })
         self.command("validate-artifact", str(refutation_packet_path), str(refutation_path))
         self.command("accept-refutation", "--workers", "1", str(refutation_path))
+
+        judgment_packet_path, judgment_packet = self.one_packet("judgment")
+        judgment_path = Path(judgment_packet["output_path"])
+        write_json(judgment_path, {
+            "schema_version": 4,
+            "stage": "judgment",
+            "task_id": judgment_packet["task_id"],
+            "attempt": judgment_packet["attempt"],
+            "agent_id": judgment_packet["agent_id"],
+            "results": [{
+                "candidate_id": "F001",
+                "verdict": "uphold",
+                "qualification": change_qualification,
+                "resolved_points": ["The deletion causes the reachable failure."],
+                "evidence": [self.reachability_evidence()],
+                "final_finding": None,
+                "residual_risk": "",
+            }],
+        })
+        self.command("validate-artifact", str(judgment_packet_path), str(judgment_path))
+        self.command("accept-judgment", str(judgment_path))
+        self.command("finalize")
         self.command("validate-final")
 
-    def test_validate_final_rejects_out_of_range_source_line(self) -> None:
+    def test_artifact_validation_rejects_out_of_range_source_line(self) -> None:
         self.command("init")
+        _, packet = self.one_packet("adversarial")
         raw = self.finding("reviewer-01:C01")
         raw["location"] = {
             "path": "sample.py", "start_line": 200, "end_line": 201, "side": "new",
         }
-        _, adversarial_path = self.write_adversarial([raw])
-        self.command("seal-adversarial", str(adversarial_path))
-
-        dedup_packet_path, dedup_packet = self.one_packet("dedup")
-        dedup_path = Path(dedup_packet["output_path"])
-        canonical = self.finding("F001")
-        canonical["location"] = raw["location"]
-        write_json(dedup_path, {
-            "schema_version": 5,
-            "stage": "dedup",
-            "task_id": dedup_packet["task_id"],
-            "attempt": dedup_packet["attempt"],
-            "agent_id": dedup_packet["agent_id"],
-            "canonical_candidates": [{
-                "finding": canonical,
-                "source_candidate_ids": ["reviewer-01:C01"],
-                "merge_basis": "The raw candidate maps directly to this finding.",
-            }],
+        artifact_path = Path(packet["output_path"])
+        write_json(artifact_path, {
+            "schema_version": 4,
+            "stage": "adversarial",
+            "task_id": packet["task_id"],
+            "attempt": packet["attempt"],
+            "agent_id": packet["agent_id"],
+            "lane": packet["lane"],
+            "coverage": {
+                "inspected_paths": ["sample.py"],
+                "checks_run": ["synthetic source inspection"],
+                "gaps": [],
+            },
+            "candidates": [raw],
         })
-        self.command("validate-artifact", str(dedup_packet_path), str(dedup_path))
-        self.command("accept-dedup", "--workers", "1", str(dedup_path))
-
-        refutation_packet_path, refutation_packet = self.one_packet("refutation")
-        refutation_path = Path(refutation_packet["output_path"])
-        write_json(refutation_path, {
-            "schema_version": 5,
-            "stage": "refutation",
-            "task_id": refutation_packet["task_id"],
-            "attempt": refutation_packet["attempt"],
-            "agent_id": refutation_packet["agent_id"],
-            "results": [{
-                "candidate_id": "F001",
-                "verdict": "uphold",
-                "qualification": self.qualification(),
-                "correctness_analysis": "The synthetic path remains reachable.",
-                "proportionality_analysis": "The persistent impact merits remediation.",
-                "ponytail_assessment": self.ponytail_assessment(),
-                "evidence": [self.reachability_evidence()],
-                "replacement_finding": None,
-                "residual_uncertainty": "",
-            }],
-        })
-        self.command("validate-artifact", str(refutation_packet_path), str(refutation_path))
-        self.command("accept-refutation", "--workers", "1", str(refutation_path))
-        failure = self.command("validate-final", expected_code=2)
+        failure = self.run_argv(packet["validation_command"], expected_code=2)
         self.assertIn("source_line_out_of_range", failure.stdout)
 
 

@@ -30,9 +30,6 @@ The orchestrator must not open or quote files under the intermediate artifact di
 |-- lenses.json
 |-- pipeline-schemas.json
 |-- stage-instructions.json
-|-- policies/
-|   `-- ponytail-review/
-|       `-- SKILL.md
 |-- packets/
 |   |-- adversarial/
 |   |-- dedup/
@@ -47,9 +44,9 @@ The orchestrator must not open or quote files under the intermediate artifact di
     `-- final.json
 ```
 
-The bootstrap script binds the resolved repository path in `repository.json`, copies the packaged coordinator, fixed Schema, and stage instructions, and snapshots the active `ponytail-review` `SKILL.md` supplied with `--ponytail-review-skill`. `scope.repository_path` must be absolute and resolve to that binding. Give each task a unique packet path and output path. Resolve paths before use and reject any path outside the run directory. Reject artifact symlinks. Write coordinator-generated files atomically with a temporary sibling and `os.replace`.
+The bootstrap script binds the resolved repository path in `repository.json` and copies the packaged coordinator, fixed Schema, and stage instructions without changing them. `scope.repository_path` must be absolute and resolve to that binding. Give each task a unique packet path and output path. Resolve paths before use and reject any path outside the run directory. Reject artifact symlinks. Write coordinator-generated files atomically with a temporary sibling and `os.replace`.
 
-At `init`, hash `repository.json`, `scope.json`, `lenses.json`, `pipeline-schemas.json`, `stage-instructions.json`, the frozen Ponytail policy, and the copied `pipeline.py`. Every later coordinator command rejects a changed contract resource with `runtime_contract_changed`; scope, output language, lenses, policy, and instructions cannot drift inside one authorized run.
+At `init`, hash `repository.json`, `scope.json`, `lenses.json`, `pipeline-schemas.json`, `stage-instructions.json`, and the copied `pipeline.py`. Every later coordinator command rejects a changed contract resource with `runtime_contract_changed`; scope, output language, lenses, and instructions cannot drift inside one authorized run.
 
 Record `scope.baseline_worktree_status` as the exact output lines from `git -C <repository> status --short --untracked-files=all` immediately before `init`. When supporting evidence lives in another Git repository, add its absolute root and exact status to optional `scope.evidence_repositories`. The reviewed finding location remains in `scope.repository_path`; evidence and qualification reachability steps may use absolute, current-side paths inside a declared evidence repository. Relative paths always resolve inside the reviewed repository. Material outside these Git roots uses `location: null` plus a concrete reference.
 
@@ -57,7 +54,7 @@ At `init`, the coordinator fingerprints HEAD, staged and unstaged binary diffs, 
 
 ## Fixed schemas
 
-[pipeline-schemas.json](pipeline-schemas.json) defines the exact version 5 contracts for `scope.json`, `lenses.json`, task packets, all four stage artifacts, and `final.json`. Do not change these contracts for a particular review.
+[pipeline-schemas.json](pipeline-schemas.json) defines the exact version 4 contracts for `scope.json`, `lenses.json`, task packets, all four stage artifacts, and `final.json`. Do not change these contracts for a particular review.
 
 Every raw, canonical, replacement, final, rejected, or unresolved finding carries the same required `manifestation` object. It distinguishes an actually verified reproduction from a reasoned scenario and records a concrete setup, ordered steps, and exact observable failure. Generic restatements of `trigger` or `impact` do not satisfy this contract.
 
@@ -71,22 +68,21 @@ JSON Schema cannot express every relationship between records. The coordinator m
 4. Every canonical finding ID matches `F###`.
 5. The canonical candidates' `source_candidate_ids` lists do not overlap, and their union equals the complete raw candidate ID set.
 6. A replacement or final finding keeps the same ID as its `candidate_id`.
-7. Each refutation assignment is covered exactly once. Each refutation result other than `uphold` receives exactly one judgment assignment; upheld candidates receive none.
+7. Each refutation and judgment assignment is covered exactly once.
 8. Every artifact's task ID and attempt match the packet that assigned its output path.
 9. Every location has `end_line` greater than or equal to `start_line` and declares side `new` or `old`; old-side locations are allowed only for change reviews and are resolved from `scope.comparison_base`.
 10. Every finding has at least one non-empty manifestation step and a non-empty setup and failure result.
 11. A `verified_reproduction` has at least one verified `test` or `command` evidence record; vague placeholders are rejected.
-12. Every refutation and judgment result carries `qualification` and `ponytail_assessment`. A disqualifying gate maps to refute/reject, an uncertain gate maps to unresolved, and only a fully passing gate maps to uphold or modify.
+12. Every refutation and judgment result carries `qualification`. A disqualifying gate maps to refute/reject, an uncertain gate maps to unresolved, and only a fully passing gate maps to uphold or modify.
 13. A qualifying refutation or judgment contains verified caller, test, command, or contract evidence and a non-empty reachability path. Every evidence item has a concrete reference; qualifying caller and contract evidence also has a repository source location.
 14. Human-facing artifact prose uses `scope.output_language`; fixed JSON enums, code symbols, paths, identifiers, and commands remain unchanged.
-15. For change reviews, every cited finding range overlaps the matching new- or old-side changed range in `git diff --unified=0 <comparison_base> -- <path>`; this permits deletion-only findings while rejecting source locations outside the reviewed change.
+15. For change reviews, every primary finding range identifies the changed cause and overlaps the matching new- or old-side range in `git diff --unified=0 <comparison_base> -- <path>`. Unchanged code where the failure manifests belongs in supporting evidence. Enforce this during artifact validation and again during final validation; deletion-only findings use the old side.
 16. `scope.instruction_files` contains absolute, readable, non-symlink files that resolve inside the bound repository; invalid paths fail during `init` rather than in every worker.
 17. All enum values are type-checked before membership checks, so malformed list or object values produce structured `VALIDATION_FAILED` output rather than a traceback.
-18. Runtime contract hashes bind scope, output language, lenses, repository binding, frozen Ponytail policy, Schema, stage instructions, and coordinator code from `init` through final validation.
+18. Runtime contract hashes bind scope, output language, lenses, repository binding, Schema, stage instructions, and coordinator code from `init` through final validation.
 19. Change-review `scope.comparison_base` is the full immutable commit OID returned by `git merge-base` or `git rev-parse`; symbolic refs and short OIDs are rejected before workers launch.
-20. A refuter or judge may use `uphold` only when its `ponytail_assessment.conclusion` is `lean`; any remaining Ponytail uncertainty must stay on the challenged path.
-21. Every `scope.evidence_repositories` entry names a unique absolute Git repository root other than the reviewed repository and records its exact baseline worktree status. The coordinator fingerprints every declared repository at `init` and rejects later status, HEAD, diff, or untracked-content drift.
-22. Primary finding and replacement-finding locations stay inside the reviewed repository. Supporting evidence and qualification reachability locations may additionally use an absolute path inside a declared evidence repository and must use side `new`; undeclared external paths and cross-repository old-side locations are rejected during artifact validation.
+20. Every `scope.evidence_repositories` entry names a unique absolute Git repository root other than the reviewed repository and records its exact baseline worktree status. The coordinator fingerprints every declared repository at `init` and rejects later status, HEAD, diff, or untracked-content drift.
+21. Primary finding and replacement-finding locations stay inside the reviewed repository. Supporting evidence and qualification reachability locations may additionally use an absolute path inside a declared evidence repository and must use side `new`; undeclared external paths and cross-repository old-side locations are rejected during artifact validation.
 
 The coordinator prints only status, counts, task IDs, packet paths, output paths, reason codes, and invalid field paths. It never prints findings, evidence, recommendations, raw JSON, or packet contents.
 
@@ -97,7 +93,7 @@ Each stage has one semantic round:
 1. Stage 1 assigns the selected review lenses once. Use only materially distinct lenses.
 2. Stage 2 uses one fresh deduplicator.
 3. Stage 3 assigns each canonical candidate to one refuter. The coordinator balances IDs across the selected workers.
-4. Stage 4 is conditional. It assigns only `modify`, `refute`, and `unresolved` results to one fresh judge using the same deterministic balancing. A refuter `uphold` is binding and bypasses judgment; when every result is upheld, the coordinator finalizes without Stage 4.
+4. Stage 4 assigns every canonical candidate to one fresh judge using the same deterministic balancing.
 
 Choose the smallest useful worker set rather than matching the harness's concurrency limit. A narrow review can use one reviewer, and one refuter or judge can cover multiple candidates. Because the orchestrator cannot read intermediate finding bodies, it chooses `--workers` only as a maximum from the visible record count, authorized scope breadth, expected inspection cost, and available slots; the coordinator partitions IDs deterministically. Prefer one for small or coherent work. Available slots are only a ceiling.
 
@@ -113,8 +109,8 @@ Use these stage instructions:
 
 1. An adversarial packet names the assigned lane and requires direct inspection, complete coverage of that lane, a concrete manifestation for every candidate, and an empty candidate list when no issue qualifies. It also distinguishes primary finding locations from supporting locations in declared evidence repositories.
 2. A dedup packet requires complete raw ID coverage, merging only true duplicates, preserving the clearest accurate manifestation, and no decision on validity.
-3. A refutation packet requires reading the frozen Ponytail policy, direct inspection of the relevant diff, source, callers, and tests, a complete qualification gate and Ponytail assessment, and correctness, reachability, scope, impact, and proportionality analysis for every assigned canonical ID.
-4. A judgment packet covers challenged IDs only. It independently rereads the frozen Ponytail policy, repeats the qualification gate, Ponytail assessment, and direct inspection, and returns one binding disposition for every assigned ID.
+3. A refutation packet requires direct inspection of the relevant diff, source, callers, and tests; a complete qualification gate; and correctness, reachability, scope, impact, and proportionality analysis for every assigned canonical ID.
+4. A judgment packet independently repeats the qualification gate and direct inspection before one binding disposition for every assigned canonical ID, including candidates the refuter upheld and correction of an inaccurate finding when modifying it.
 
 ## Coordinator commands
 
@@ -123,13 +119,13 @@ The packaged `pipeline.py` uses these commands and accepts only current-attempt 
 1. `init` validates `scope.json` and `lenses.json`, then creates reviewer packets.
 2. `seal-adversarial <artifact>...` validates the supplied current reviewer artifacts, then creates one deduplication packet. It finalizes immediately when there are no raw candidates.
 3. `accept-dedup --workers N <artifact>` validates complete source coverage and stable IDs, then creates at most `N` deterministically balanced refutation packets. Treat `N` as a useful maximum, capped by the dedup receipt's record count and available runtime slots.
-4. `accept-refutation --workers N <artifact>...` validates one refutation result for every canonical candidate. It finalizes immediately when all results are `uphold`; otherwise it creates at most `N` deterministically balanced judgment packets covering only `modify`, `refute`, and `unresolved` IDs. Apply the same useful-maximum rule instead of passing total capacity by default.
-5. `accept-judgment <artifact>...` validates one binding judgment for every challenged candidate.
+4. `accept-refutation --workers N <artifact>...` validates one refutation result for every canonical candidate, then creates at most `N` deterministically balanced judgment packets covering every canonical candidate. Apply the same useful-maximum rule instead of passing total capacity by default.
+5. `accept-judgment <artifact>...` validates one binding judgment for every canonical candidate.
 6. `retry-packet <packet>` creates a packet with a new task ID, incremented attempt, and new output path. It never overwrites the old packet or artifact.
 7. `finalize` writes `final/final.json` and prints its path plus trace counts.
 8. `status` prints only the current phase and current packet/output paths so a compacted or resumed orchestrator task can recover safely.
 9. `scaffold-artifact <packet>` optionally writes a top-level artifact skeleton to the packet's output path and refuses to overwrite an existing artifact.
-10. `validate-artifact <packet> <artifact>` validates one worker artifact against its packet and current run state. Workers must execute the exact `validation_command` argv stored in their packet before sending a success receipt.
+10. `validate-artifact <packet> <artifact>` validates one worker artifact against its packet and current run state, including primary finding ranges and supporting source locations. Workers must execute the exact `validation_command` argv stored in their packet before sending a success receipt.
 11. `validate-final` reconstructs and checks the final payload, then verifies that every upheld, rejected, and unresolved finding cites in-range source lines on the declared current or comparison-base side and that every supporting location belongs to the reviewed repository or a declared, unchanged evidence repository.
 
 A transition succeeds only when all expected artifacts pass validation. The coordinator applies fixed routing rules and does not decide whether a finding is correct.
@@ -140,13 +136,12 @@ Raw candidate IDs include the agent ID, such as `reviewer-02:C03`. The deduplica
 
 Use these routing rules:
 
-1. A refutation `uphold` keeps the canonical finding and enters final assembly directly. Its `final_judgment.source` is `refutation`.
-2. Refutation `modify`, `refute`, and `unresolved` results go to judgment exactly once.
-3. A judgment of `uphold` keeps the finding under judgment: the Stage 3 replacement when refutation returned `modify`, otherwise the canonical finding.
-4. A judgment of `modify` uses the complete corrected finding.
-5. A judgment of `reject` omits the finding from the upheld list and records the Stage 3 replacement finding when its verdict was `modify`, otherwise the canonical finding, plus the Stage 3 verdict and Stage 4 reason in `rejected_findings`.
-6. A judgment of `unresolved` omits the finding from the upheld list and records the Stage 3 replacement finding when its verdict was `modify`, otherwise the canonical finding, plus the Stage 3 verdict, resolved points, and non-empty residual risk in `unresolved_findings`.
-7. Every canonical candidate produces exactly one `review_records` entry. The binding source is Stage 3 for direct upholds and Stage 4 for challenged candidates. The record preserves the original case, both Ponytail assessments when judgment runs, the binding qualification and basis, and the exact finding selected for presentation.
+1. Every refutation result goes to judgment; no Stage 3 verdict enters final assembly directly.
+2. A judgment of `uphold` keeps the finding under judgment: the Stage 3 replacement when refutation returned `modify`, otherwise the canonical finding.
+3. A judgment of `modify` uses the complete corrected finding.
+4. A judgment of `reject` omits the finding from the upheld list and records the Stage 3 replacement finding when its verdict was `modify`, otherwise the canonical finding, plus the Stage 3 verdict and Stage 4 reason in `rejected_findings`.
+5. A judgment of `unresolved` omits the finding from the upheld list and records the Stage 3 replacement finding when its verdict was `modify`, otherwise the canonical finding, plus the Stage 3 verdict, resolved points, and non-empty residual risk in `unresolved_findings`.
+6. Every canonical candidate produces exactly one `review_records` entry whose final judgment source is Stage 4. The record preserves the original case, the refuter's qualification and analysis, the judge's qualification and binding basis, and the exact finding selected for presentation.
 
 ## Worker messages
 
@@ -192,13 +187,13 @@ The orchestrator may give those field paths to the responsible worker without re
 
 ## Final payload
 
-The coordinator writes one `final.json` that follows the fixed Schema. It contains surviving findings, rejected findings, structured unresolved findings, Stage 1 coverage, trace counts, and one `review_records` audit entry for every canonical candidate. Each audit entry preserves the original case, the refuter's analysis, Ponytail assessment, and evidence, the binding refuter or judge basis and evidence, and the exact finding selected for presentation. It must not contain raw candidates or redundant copies of complete intermediate artifacts. The coordinator records a SHA-256 digest when each stage artifact is accepted. `validate-final` first rejects changed accepted artifacts and any reviewed or evidence repository drift, then reconstructs the expected payload from accepted artifacts and requires exact equality before verifying primary finding locations against the reviewed diff and supporting locations against their declared repository snapshots.
+The coordinator writes one `final.json` that follows the fixed Schema. It contains surviving findings, rejected findings, structured unresolved findings, Stage 1 coverage, trace counts, and one `review_records` audit entry for every canonical candidate. Each audit entry preserves both qualification decisions, the original case, the refuter's analysis and evidence, the judge's binding basis and evidence, and the exact finding selected for presentation. It must not contain raw candidates or redundant copies of complete intermediate artifacts. The coordinator records a SHA-256 digest when each stage artifact is accepted. `validate-final` first rejects changed accepted artifacts and any reviewed or evidence repository drift, then reconstructs the expected payload from accepted artifacts and requires exact equality before verifying primary finding locations against the reviewed diff and supporting locations against their declared repository snapshots.
 
 Calculate trace values from unique canonical IDs:
 
 1. `reviewers_completed` is the number of valid adversarial artifacts.
 2. `raw_candidates` and `canonical_candidates` are the corresponding unique ID counts.
-3. `refutation_results` equals the canonical candidate count. `judgment_results` equals only the number of `modify`, `refute`, and `unresolved` refutation results and may be zero.
+3. `refutation_results` and `judgment_results` both equal the canonical candidate count for a complete non-empty run.
 4. `rejected_findings` counts final judge results of `reject`.
 5. `unresolved` counts final judge results of `unresolved`.
 6. `final_findings` is the number of findings retained after routing.
