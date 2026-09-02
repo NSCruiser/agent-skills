@@ -237,8 +237,20 @@ class PipelineCase(unittest.TestCase):
             "status": "verified",
         }
 
-    def write_adversarial(self, candidates: list[dict]) -> tuple[Path, Path]:
-        packet_path, packet = self.one_packet("adversarial")
+    def use_two_reviewers(self) -> None:
+        lenses_path = self.run_root / "lenses.json"
+        lenses = json.loads(lenses_path.read_text(encoding="utf-8"))
+        lenses["reviewers"].append({
+            "agent_id": "reviewer-02",
+            "lane": "caller contracts",
+            "focus": ["Reachability and observable failures"],
+        })
+        write_json(lenses_path, lenses)
+
+    def write_adversarial_for_packet(
+        self, packet_path: Path, candidates: list[dict]
+    ) -> Path:
+        packet = json.loads(packet_path.read_text(encoding="utf-8"))
         artifact_path = Path(packet["output_path"])
         write_json(artifact_path, {
             "schema_version": 4,
@@ -256,6 +268,11 @@ class PipelineCase(unittest.TestCase):
         })
         validation = self.run_argv(packet["validation_command"])
         self.assertIn("ARTIFACT_VALID", validation.stdout)
+        return artifact_path
+
+    def write_adversarial(self, candidates: list[dict]) -> tuple[Path, Path]:
+        packet_path, _ = self.one_packet("adversarial")
+        artifact_path = self.write_adversarial_for_packet(packet_path, candidates)
         return packet_path, artifact_path
 
     def test_empty_review_finalizes_and_validates(self) -> None:
@@ -271,6 +288,142 @@ class PipelineCase(unittest.TestCase):
         self.assertEqual(final["unresolved_findings"], [])
         self.assertEqual(final["review_records"], [])
         self.assertEqual(final["trace"]["canonical_candidates"], 0)
+
+    def test_single_reviewer_multiple_findings_bypasses_deduplicator(self) -> None:
+        self.command("init")
+        raw_one = self.finding("reviewer-01:C01")
+        raw_two = self.finding("reviewer-01:C02")
+        _, artifact_path = self.write_adversarial([raw_one, raw_two])
+        sealed = self.command("seal-adversarial", str(artifact_path))
+
+        self.assertIn("STAGE_BYPASSED dedup 2", sealed.stdout)
+        self.assertEqual(list((self.run_root / "packets" / "dedup").glob("*.json")), [])
+        state = json.loads(
+            (self.run_root / ".pipeline-state.json").read_text(encoding="utf-8")
+        )
+        canonical = json.loads(
+            Path(state["accepted"]["dedup"]).read_text(encoding="utf-8")
+        )["canonical_candidates"]
+        self.assertEqual(
+            [row["source_candidate_ids"] for row in canonical],
+            [["reviewer-01:C01"], ["reviewer-01:C02"]],
+        )
+        self.assertEqual(
+            [row["finding"]["id"] for row in canonical], ["F001", "F002"]
+        )
+
+        started = self.command("start-refutation", "--workers", "2")
+        self.assertIn("STAGE_READY refutation 2 2", started.stdout)
+
+    def test_multiple_reviewers_single_finding_bypasses_deduplicator(self) -> None:
+        self.use_two_reviewers()
+        self.command("init")
+        packet_paths = sorted((self.run_root / "packets" / "adversarial").glob("*.json"))
+        artifacts = [
+            self.write_adversarial_for_packet(
+                packet_path,
+                [self.finding("reviewer-01:C01")] if "reviewer-01" in packet_path.name else [],
+            )
+            for packet_path in packet_paths
+        ]
+
+        sealed = self.command("seal-adversarial", *(str(path) for path in artifacts))
+        self.assertIn("STAGE_BYPASSED dedup 1", sealed.stdout)
+        self.assertEqual(list((self.run_root / "packets" / "dedup").glob("*.json")), [])
+
+    def test_multiple_reviewers_multiple_findings_use_deduplicator(self) -> None:
+        self.use_two_reviewers()
+        self.command("init")
+        packet_paths = sorted((self.run_root / "packets" / "adversarial").glob("*.json"))
+        artifacts = []
+        for packet_path in packet_paths:
+            reviewer = "reviewer-01" if "reviewer-01" in packet_path.name else "reviewer-02"
+            artifacts.append(
+                self.write_adversarial_for_packet(
+                    packet_path, [self.finding(f"{reviewer}:C01")]
+                )
+            )
+
+        sealed = self.command("seal-adversarial", *(str(path) for path in reversed(artifacts)))
+        self.assertIn("PACKET_CREATED dedup", sealed.stdout)
+        packet_path, packet = self.one_packet("dedup")
+        artifact_path = Path(packet["output_path"])
+        canonical_candidates = [{
+            "finding": self.finding("F001"),
+            "source_candidate_ids": ["reviewer-01:C01"],
+            "merge_basis": "The first candidate remains independent.",
+        }]
+        dedup = {
+            "schema_version": 4,
+            "stage": "dedup",
+            "task_id": packet["task_id"],
+            "attempt": packet["attempt"],
+            "agent_id": packet["agent_id"],
+            "canonical_candidates": canonical_candidates,
+        }
+        write_json(artifact_path, dedup)
+        incomplete = self.run_argv(packet["validation_command"], expected_code=2)
+        self.assertIn("incomplete_source_coverage", incomplete.stdout)
+
+        canonical_candidates.append({
+            "finding": self.finding("F002"),
+            "source_candidate_ids": ["reviewer-02:C01"],
+            "merge_basis": "The second candidate remains independent.",
+        })
+        write_json(artifact_path, dedup)
+        self.run_argv(packet["validation_command"])
+        accepted = self.command(
+            "accept-dedup", "--workers", "2", str(artifact_path)
+        )
+        self.assertIn("STAGE_ACCEPTED dedup 2 2", accepted.stdout)
+
+    def test_stage_transition_revalidates_worker_artifact(self) -> None:
+        self.command("init")
+        _, artifact_path = self.write_adversarial([
+            self.finding("reviewer-01:C01")
+        ])
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        artifact["candidates"][0]["location"]["end_line"] = 200
+        write_json(artifact_path, artifact)
+
+        failure = self.command("seal-adversarial", str(artifact_path), expected_code=2)
+        self.assertIn("source_line_out_of_range", failure.stdout)
+
+    def test_empty_review_requires_recorded_coverage(self) -> None:
+        self.command("init")
+        packet_path, packet = self.one_packet("adversarial")
+        self.command("scaffold-artifact", str(packet_path))
+
+        failure = self.run_argv(packet["validation_command"], expected_code=2)
+        self.assertIn("$.coverage.inspected_paths", failure.stdout)
+
+    def test_changed_packet_is_rejected(self) -> None:
+        self.command("init")
+        packet_path, packet = self.one_packet("adversarial")
+        packet["instructions"].append("Changed after packet creation.")
+        write_json(packet_path, packet)
+
+        failure = self.command("status", expected_code=2)
+        self.assertIn("packet_changed", failure.stdout)
+
+    def test_changed_passthrough_artifact_blocks_refutation(self) -> None:
+        self.command("init")
+        _, artifact_path = self.write_adversarial([
+            self.finding("reviewer-01:C01")
+        ])
+        self.command("seal-adversarial", str(artifact_path))
+        state = json.loads(
+            (self.run_root / ".pipeline-state.json").read_text(encoding="utf-8")
+        )
+        canonical_path = Path(state["accepted"]["dedup"])
+        canonical = json.loads(canonical_path.read_text(encoding="utf-8"))
+        canonical["canonical_candidates"][0]["finding"]["title"] = "Changed input"
+        write_json(canonical_path, canonical)
+
+        failure = self.command(
+            "start-refutation", "--workers", "1", expected_code=2
+        )
+        self.assertIn("accepted_artifact_changed", failure.stdout)
 
     def test_validate_final_rejects_trace_counts_that_disagree_with_state(self) -> None:
         self.command("init")
@@ -513,24 +666,8 @@ class PipelineCase(unittest.TestCase):
         raw = self.finding("reviewer-01:C01")
         _, adversarial_path = self.write_adversarial([raw])
         self.command("seal-adversarial", str(adversarial_path))
-
-        dedup_packet_path, dedup_packet = self.one_packet("dedup")
-        dedup_path = Path(dedup_packet["output_path"])
         canonical = self.finding("F001")
-        write_json(dedup_path, {
-            "schema_version": 4,
-            "stage": "dedup",
-            "task_id": dedup_packet["task_id"],
-            "attempt": dedup_packet["attempt"],
-            "agent_id": dedup_packet["agent_id"],
-            "canonical_candidates": [{
-                "finding": canonical,
-                "source_candidate_ids": ["reviewer-01:C01"],
-                "merge_basis": "The only raw candidate maps directly to this finding.",
-            }],
-        })
-        self.command("validate-artifact", str(dedup_packet_path), str(dedup_path))
-        self.command("accept-dedup", "--workers", "3", str(dedup_path))
+        self.command("start-refutation", "--workers", "3")
 
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
         refutation_path = Path(refutation_packet["output_path"])
@@ -615,25 +752,9 @@ class PipelineCase(unittest.TestCase):
         raw["evidence"].append(external_evidence)
         _, adversarial_path = self.write_adversarial([raw])
         self.command("seal-adversarial", str(adversarial_path))
-
-        dedup_packet_path, dedup_packet = self.one_packet("dedup")
-        dedup_path = Path(dedup_packet["output_path"])
         canonical = self.finding("F001")
         canonical["evidence"].append(external_evidence)
-        write_json(dedup_path, {
-            "schema_version": 4,
-            "stage": "dedup",
-            "task_id": dedup_packet["task_id"],
-            "attempt": dedup_packet["attempt"],
-            "agent_id": dedup_packet["agent_id"],
-            "canonical_candidates": [{
-                "finding": canonical,
-                "source_candidate_ids": ["reviewer-01:C01"],
-                "merge_basis": "The only raw candidate maps directly to this finding.",
-            }],
-        })
-        self.command("validate-artifact", str(dedup_packet_path), str(dedup_path))
-        self.command("accept-dedup", "--workers", "1", str(dedup_path))
+        self.command("start-refutation", "--workers", "1")
 
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
         refutation_path = Path(refutation_packet["output_path"])
@@ -704,32 +825,9 @@ class PipelineCase(unittest.TestCase):
         raw_two = self.finding("reviewer-01:C02")
         _, adversarial_path = self.write_adversarial([raw_one, raw_two])
         self.command("seal-adversarial", str(adversarial_path))
-
-        dedup_packet_path, dedup_packet = self.one_packet("dedup")
-        dedup_path = Path(dedup_packet["output_path"])
         canonical_one = self.finding("F001")
         canonical_two = self.finding("F002")
-        write_json(dedup_path, {
-            "schema_version": 4,
-            "stage": "dedup",
-            "task_id": dedup_packet["task_id"],
-            "attempt": dedup_packet["attempt"],
-            "agent_id": dedup_packet["agent_id"],
-            "canonical_candidates": [
-                {
-                    "finding": canonical_one,
-                    "source_candidate_ids": ["reviewer-01:C01"],
-                    "merge_basis": "The first raw candidate remains independent.",
-                },
-                {
-                    "finding": canonical_two,
-                    "source_candidate_ids": ["reviewer-01:C02"],
-                    "merge_basis": "The second raw candidate remains independent.",
-                },
-            ],
-        })
-        self.command("validate-artifact", str(dedup_packet_path), str(dedup_path))
-        self.command("accept-dedup", "--workers", "1", str(dedup_path))
+        self.command("start-refutation", "--workers", "1")
 
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
         refutation_path = Path(refutation_packet["output_path"])
@@ -763,7 +861,10 @@ class PipelineCase(unittest.TestCase):
             ],
         })
         self.command("validate-artifact", str(refutation_packet_path), str(refutation_path))
-        self.command("accept-refutation", "--workers", "1", str(refutation_path))
+        accepted = self.command(
+            "accept-refutation", "--workers", "1", str(refutation_path)
+        )
+        self.assertIn("STAGE_ACCEPTED refutation 2 1", accepted.stdout)
 
         judgment_packet_path, judgment_packet = self.one_packet("judgment")
         judgment_path = Path(judgment_packet["output_path"])
@@ -828,24 +929,8 @@ class PipelineCase(unittest.TestCase):
         raw = self.finding("reviewer-01:C01")
         _, adversarial_path = self.write_adversarial([raw])
         self.command("seal-adversarial", str(adversarial_path))
-
-        dedup_packet_path, dedup_packet = self.one_packet("dedup")
-        dedup_path = Path(dedup_packet["output_path"])
         canonical = self.finding("F001")
-        write_json(dedup_path, {
-            "schema_version": 4,
-            "stage": "dedup",
-            "task_id": dedup_packet["task_id"],
-            "attempt": dedup_packet["attempt"],
-            "agent_id": dedup_packet["agent_id"],
-            "canonical_candidates": [{
-                "finding": canonical,
-                "source_candidate_ids": ["reviewer-01:C01"],
-                "merge_basis": "The raw candidate maps directly to this finding.",
-            }],
-        })
-        self.command("validate-artifact", str(dedup_packet_path), str(dedup_path))
-        self.command("accept-dedup", "--workers", "1", str(dedup_path))
+        self.command("start-refutation", "--workers", "1")
 
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
         refutation_path = Path(refutation_packet["output_path"])
@@ -916,23 +1001,7 @@ class PipelineCase(unittest.TestCase):
         raw = self.finding("reviewer-01:C01")
         _, adversarial_path = self.write_adversarial([raw])
         self.command("seal-adversarial", str(adversarial_path))
-
-        dedup_packet_path, dedup_packet = self.one_packet("dedup")
-        dedup_path = Path(dedup_packet["output_path"])
-        write_json(dedup_path, {
-            "schema_version": 4,
-            "stage": "dedup",
-            "task_id": dedup_packet["task_id"],
-            "attempt": dedup_packet["attempt"],
-            "agent_id": dedup_packet["agent_id"],
-            "canonical_candidates": [{
-                "finding": self.finding("F001"),
-                "source_candidate_ids": ["reviewer-01:C01"],
-                "merge_basis": "The only raw candidate maps directly to this finding.",
-            }],
-        })
-        self.run_argv(dedup_packet["validation_command"])
-        self.command("accept-dedup", "--workers", "1", str(dedup_path))
+        self.command("start-refutation", "--workers", "1")
 
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
         refutation_path = Path(refutation_packet["output_path"])
@@ -1096,10 +1165,7 @@ class PipelineCase(unittest.TestCase):
 
     def test_retry_replaces_current_packet_and_stale_artifact_is_rejected(self) -> None:
         self.command("init")
-        old_packet_path, old_packet = self.one_packet("adversarial")
-        self.command("scaffold-artifact", str(old_packet_path))
-        old_artifact_path = Path(old_packet["output_path"])
-        self.command("validate-artifact", str(old_packet_path), str(old_artifact_path))
+        old_packet_path, old_artifact_path = self.write_adversarial([])
         retry = self.command("retry-packet", str(old_packet_path))
         self.assertIn("PACKET_RETRIED", retry.stdout)
         status = self.command("status")
@@ -1186,25 +1252,9 @@ class PipelineCase(unittest.TestCase):
         }
         _, adversarial_path = self.write_adversarial([raw])
         self.command("seal-adversarial", str(adversarial_path))
-
-        dedup_packet_path, dedup_packet = self.one_packet("dedup")
-        dedup_path = Path(dedup_packet["output_path"])
         canonical = self.finding("F001")
         canonical["location"] = raw["location"]
-        write_json(dedup_path, {
-            "schema_version": 4,
-            "stage": "dedup",
-            "task_id": dedup_packet["task_id"],
-            "attempt": dedup_packet["attempt"],
-            "agent_id": dedup_packet["agent_id"],
-            "canonical_candidates": [{
-                "finding": canonical,
-                "source_candidate_ids": ["reviewer-01:C01"],
-                "merge_basis": "The deleted line is the only raw candidate.",
-            }],
-        })
-        self.command("validate-artifact", str(dedup_packet_path), str(dedup_path))
-        self.command("accept-dedup", "--workers", "1", str(dedup_path))
+        self.command("start-refutation", "--workers", "1")
 
         refutation_packet_path, refutation_packet = self.one_packet("refutation")
         refutation_path = Path(refutation_packet["output_path"])

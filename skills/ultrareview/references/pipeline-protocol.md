@@ -46,7 +46,7 @@ The orchestrator must not open or quote files under the intermediate artifact di
 
 The bootstrap script binds the resolved repository path in `repository.json` and copies the packaged coordinator, fixed Schema, and stage instructions without changing them. `scope.repository_path` must be absolute and resolve to that binding. Give each task a unique packet path and output path. Resolve paths before use and reject any path outside the run directory. Reject artifact symlinks. Write coordinator-generated files atomically with a temporary sibling and `os.replace`.
 
-At `init`, hash `repository.json`, `scope.json`, `lenses.json`, `pipeline-schemas.json`, `stage-instructions.json`, and the copied `pipeline.py`. Every later coordinator command rejects a changed contract resource with `runtime_contract_changed`; scope, output language, lenses, and instructions cannot drift inside one authorized run.
+At `init`, hash `repository.json`, `scope.json`, `lenses.json`, `pipeline-schemas.json`, `stage-instructions.json`, and the copied `pipeline.py`. Hash each generated current packet as well. Every later coordinator command rejects a changed contract resource or current packet; scope, output language, lenses, instructions, and assignments cannot drift inside one authorized run.
 
 Record `scope.baseline_worktree_status` as the exact output lines from `git -C <repository> status --short --untracked-files=all` immediately before `init`. When supporting evidence lives in another Git repository, add its absolute root and exact status to optional `scope.evidence_repositories`. The reviewed finding location remains in `scope.repository_path`; evidence and qualification reachability steps may use absolute, current-side paths inside a declared evidence repository. Relative paths always resolve inside the reviewed repository. Material outside these Git roots uses `location: null` plus a concrete reference.
 
@@ -63,13 +63,13 @@ The coordinator must check required fields, allowed values, unknown fields, uniq
 JSON Schema cannot express every relationship between records. The coordinator must also enforce these invariants:
 
 1. Agent IDs, task IDs, raw candidate IDs, and canonical IDs are unique in their own sets.
-2. Every artifact's agent ID matches its packet. An adversarial artifact's lane also matches its packet and lens assignment.
+2. Every worker artifact's agent ID matches its packet. An adversarial artifact's lane also matches its packet and lens assignment. The coordinator's one-to-one canonical artifact uses `agent_id: coordinator` and has no worker packet.
 3. Every raw candidate ID begins with its agent ID followed by `:C` and at least two digits.
 4. Every canonical finding ID matches `F###`.
 5. The canonical candidates' `source_candidate_ids` lists do not overlap, and their union equals the complete raw candidate ID set.
 6. A replacement or final finding keeps the same ID as its `candidate_id`.
 7. Each refutation and judgment assignment is covered exactly once.
-8. Every artifact's task ID and attempt match the packet that assigned its output path.
+8. Every worker artifact's task ID and attempt match the packet that assigned its output path.
 9. Every location has `end_line` greater than or equal to `start_line` and declares side `new` or `old`; old-side locations are allowed only for change reviews and are resolved from `scope.comparison_base`.
 10. Every finding has at least one non-empty manifestation step and a non-empty setup and failure result.
 11. A `verified_reproduction` has at least one verified `test` or `command` evidence record; vague placeholders are rejected.
@@ -83,6 +83,7 @@ JSON Schema cannot express every relationship between records. The coordinator m
 19. Change-review `scope.comparison_base` is the full immutable commit OID returned by `git merge-base` or `git rev-parse`; symbolic refs and short OIDs are rejected before workers launch.
 20. Every `scope.evidence_repositories` entry names a unique absolute Git repository root other than the reviewed repository and records its exact baseline worktree status. The coordinator fingerprints every declared repository at `init` and rejects later status, HEAD, diff, or untracked-content drift.
 21. Primary finding and replacement-finding locations stay inside the reviewed repository. Supporting evidence and qualification reachability locations may additionally use an absolute path inside a declared evidence repository and must use side `new`; undeclared external paths and cross-repository old-side locations are rejected during artifact validation.
+22. Every adversarial artifact records at least one inspected path and one completed check, including artifacts with no candidates.
 
 The coordinator prints only status, counts, task IDs, packet paths, output paths, reason codes, and invalid field paths. It never prints findings, evidence, recommendations, raw JSON, or packet contents.
 
@@ -91,7 +92,7 @@ The coordinator prints only status, counts, task IDs, packet paths, output paths
 Each stage has one semantic round:
 
 1. Stage 1 assigns the selected review lenses once. Use only materially distinct lenses.
-2. Stage 2 uses one fresh deduplicator.
+2. Stage 2 uses one fresh deduplicator only when Stage 1 used more than one reviewer and produced more than one raw candidate in total. Otherwise, the coordinator preserves every raw candidate one-to-one and assigns canonical IDs without launching a worker.
 3. Stage 3 assigns each canonical candidate to one refuter. The coordinator balances IDs across the selected workers.
 4. Stage 4 assigns every canonical candidate to one fresh judge using the same deterministic balancing.
 
@@ -107,8 +108,8 @@ Every packet must tell the worker to read `scope.json` first, then read and foll
 
 Use these stage instructions:
 
-1. An adversarial packet names the assigned lane and requires direct inspection, complete coverage of that lane, a concrete manifestation for every candidate, and an empty candidate list when no issue qualifies. It also distinguishes primary finding locations from supporting locations in declared evidence repositories.
-2. A dedup packet requires complete raw ID coverage, merging only true duplicates, preserving the clearest accurate manifestation, and no decision on validity.
+1. An adversarial packet names the assigned lane and requires direct inspection, at least one recorded inspected path and check, complete coverage of that lane, a concrete manifestation for every candidate, and an empty candidate list when no issue qualifies. It also distinguishes primary finding locations from supporting locations in declared evidence repositories.
+2. When deduplication is applicable, a dedup packet requires complete raw ID coverage, merging only true duplicates, preserving the clearest accurate manifestation, and no decision on validity.
 3. A refutation packet requires direct inspection of the relevant diff, source, callers, and tests; a complete qualification gate; and correctness, reachability, scope, impact, and proportionality analysis for every assigned canonical ID.
 4. A judgment packet independently repeats the qualification gate and direct inspection before one binding disposition for every assigned canonical ID, including candidates the refuter upheld and correction of an inaccurate finding when modifying it.
 
@@ -117,22 +118,23 @@ Use these stage instructions:
 The packaged `pipeline.py` uses these commands and accepts only current-attempt paths supplied by the orchestrator:
 
 1. `init` validates `scope.json` and `lenses.json`, then creates reviewer packets.
-2. `seal-adversarial <artifact>...` validates the supplied current reviewer artifacts, then creates one deduplication packet. It finalizes immediately when there are no raw candidates.
-3. `accept-dedup --workers N <artifact>` validates complete source coverage and stable IDs, then creates at most `N` deterministically balanced refutation packets. Treat `N` as a useful maximum, capped by the dedup receipt's record count and available runtime slots.
-4. `accept-refutation --workers N <artifact>...` validates one refutation result for every canonical candidate, then creates at most `N` deterministically balanced judgment packets covering every canonical candidate. Apply the same useful-maximum rule instead of passing total capacity by default.
-5. `accept-judgment <artifact>...` validates one binding judgment for every canonical candidate.
-6. `retry-packet <packet>` creates a packet with a new task ID, incremented attempt, and new output path. It never overwrites the old packet or artifact.
-7. `finalize` writes `final/final.json` and prints its path plus trace counts.
-8. `status` prints only the current phase and current packet/output paths so a compacted or resumed orchestrator task can recover safely.
-9. `scaffold-artifact <packet>` optionally writes a top-level artifact skeleton to the packet's output path and refuses to overwrite an existing artifact.
-10. `validate-artifact <packet> <artifact>` validates one worker artifact against its packet and current run state, including primary finding ranges and supporting source locations. Workers must execute the exact `validation_command` argv stored in their packet before sending a success receipt.
-11. `validate-final` reconstructs and checks the final payload, then verifies that every upheld, rejected, and unresolved finding cites in-range source lines on the declared current or comparison-base side and that every supporting location belongs to the reviewed repository or a declared, unchanged evidence repository.
+2. `seal-adversarial <artifact>...` validates the supplied current reviewer artifacts. It finalizes immediately when there are no raw candidates. It creates one deduplication packet only when there is more than one reviewer and more than one raw candidate; otherwise it writes a one-to-one canonical artifact and reports `STAGE_BYPASSED dedup`.
+3. `start-refutation --workers N` creates at most `N` deterministically balanced refutation packets after the coordinator's one-to-one canonicalization path.
+4. `accept-dedup --workers N <artifact>` validates complete source coverage and stable IDs, then creates at most `N` deterministically balanced refutation packets. Treat `N` as a useful maximum, capped by the dedup receipt's record count and available runtime slots.
+5. `accept-refutation --workers N <artifact>...` validates one refutation result for every canonical candidate, then creates at most `N` deterministically balanced judgment packets covering every canonical candidate. Apply the same useful-maximum rule instead of passing total capacity by default.
+6. `accept-judgment <artifact>...` validates one binding judgment for every canonical candidate.
+7. `retry-packet <packet>` creates a packet with a new task ID, incremented attempt, and new output path. It never overwrites the old packet or artifact.
+8. `finalize` writes `final/final.json` and prints its path plus trace counts.
+9. `status` prints only the current phase and current packet/output paths so a compacted or resumed orchestrator task can recover safely.
+10. `scaffold-artifact <packet>` optionally writes a top-level artifact skeleton to the packet's output path and refuses to overwrite an existing artifact.
+11. `validate-artifact <packet> <artifact>` validates one worker artifact against its packet and current run state, including primary finding ranges and supporting source locations. Workers must execute the exact `validation_command` argv stored in their packet before sending a success receipt.
+12. `validate-final` reconstructs and checks the final payload, then verifies that every upheld, rejected, and unresolved finding cites in-range source lines on the declared current or comparison-base side and that every supporting location belongs to the reviewed repository or a declared, unchanged evidence repository.
 
 A transition succeeds only when all expected artifacts pass validation. The coordinator applies fixed routing rules and does not decide whether a finding is correct.
 
 ## Source mapping and routing
 
-Raw candidate IDs include the agent ID, such as `reviewer-02:C03`. The deduplicator assigns stable IDs such as `F001`. Each canonical candidate lists its source raw IDs, and those lists form the complete non-overlapping mapping.
+Raw candidate IDs include the agent ID, such as `reviewer-02:C03`. The applicable deduplicator or the coordinator's one-to-one path assigns stable IDs such as `F001`. Each canonical candidate lists its source raw IDs, and those lists form the complete non-overlapping mapping.
 
 Use these routing rules:
 
@@ -187,7 +189,7 @@ The orchestrator may give those field paths to the responsible worker without re
 
 ## Final payload
 
-The coordinator writes one `final.json` that follows the fixed Schema. It contains surviving findings, rejected findings, structured unresolved findings, Stage 1 coverage, trace counts, and one `review_records` audit entry for every canonical candidate. Each audit entry preserves both qualification decisions, the original case, the refuter's analysis and evidence, the judge's binding basis and evidence, and the exact finding selected for presentation. It must not contain raw candidates or redundant copies of complete intermediate artifacts. The coordinator records a SHA-256 digest when each stage artifact is accepted. `validate-final` first rejects changed accepted artifacts and any reviewed or evidence repository drift, then reconstructs the expected payload from accepted artifacts and requires exact equality before verifying primary finding locations against the reviewed diff and supporting locations against their declared repository snapshots.
+The coordinator writes one `final.json` that follows the fixed Schema. It contains surviving findings, rejected findings, structured unresolved findings, Stage 1 coverage, trace counts, and one `review_records` audit entry for every canonical candidate. Each audit entry preserves both qualification decisions, the original case, the refuter's analysis and evidence, the judge's binding basis and evidence, and the exact finding selected for presentation. It must not contain raw candidates or redundant copies of complete intermediate artifacts. The coordinator records a SHA-256 digest when each stage artifact is accepted and rejects changed accepted inputs before downstream work. `validate-final` also rejects repository drift, reconstructs the expected payload from accepted artifacts, and requires exact equality before verifying primary finding locations against the reviewed diff and supporting locations against their declared repository snapshots.
 
 Calculate trace values from unique canonical IDs:
 

@@ -302,12 +302,14 @@ def require_runtime_contract_unchanged(state: dict, stage: str, task_id: str) ->
             "runtime_contract_changed", "$.runtime_contract_hashes")
 
 
-def require_accepted_artifacts_unchanged(state: dict) -> None:
-    for stage, entries in state.get("accepted_hashes", {}).items():
+def require_accepted_artifacts_unchanged(
+    state: dict, stage: str, task_id: str
+) -> None:
+    for entries in state.get("accepted_hashes", {}).values():
         for raw_path, expected_hash in entries.items():
             path = safe_path(raw_path, must_exist=True, reject_symlink=True)
-            require(file_sha256(path, "finalize", "coordinator") == expected_hash,
-                    "finalize", "coordinator", "accepted_artifact_changed", str(path))
+            require(file_sha256(path, stage, task_id) == expected_hash,
+                    stage, task_id, "accepted_artifact_changed", str(path))
 
 
 def validate_location(value: object, stage: str, task_id: str, field: str) -> None:
@@ -394,8 +396,18 @@ def validate_finding(value: object, stage: str, task_id: str, field: str, *, raw
 
 def validate_coverage(value: object, stage: str, task_id: str, field: str) -> None:
     mapping = exact_keys(value, {"inspected_paths", "checks_run", "gaps"}, stage, task_id, field)
-    string_list(mapping["inspected_paths"], stage, task_id, f"{field}.inspected_paths", unique=True)
-    string_list(mapping["checks_run"], stage, task_id, f"{field}.checks_run")
+    inspected_paths = string_list(
+        mapping["inspected_paths"], stage, task_id,
+        f"{field}.inspected_paths", unique=True, nonempty=True,
+    )
+    checks_run = string_list(
+        mapping["checks_run"], stage, task_id,
+        f"{field}.checks_run", nonempty=True,
+    )
+    require(bool(inspected_paths), stage, task_id,
+            "invalid_array", f"{field}.inspected_paths")
+    require(bool(checks_run), stage, task_id,
+            "invalid_array", f"{field}.checks_run")
     string_list(mapping["gaps"], stage, task_id, f"{field}.gaps")
 
 
@@ -474,6 +486,7 @@ def require_worktree_unchanged(scope: dict, stage: str, task_id: str) -> None:
     if STATE_PATH.exists():
         state = load_state()
         require_runtime_contract_unchanged(state, stage, task_id)
+        require_accepted_artifacts_unchanged(state, stage, task_id)
         expected_fingerprint = nonempty_string(
             state.get("repository_fingerprint"), stage, task_id,
             "$.repository_fingerprint",
@@ -659,6 +672,9 @@ def make_packet(state: dict, *, stage: str, agent_id: str, input_paths: list[str
     }
     validate_packet(packet, stage, task_id)
     atomic_write(packet_path, packet)
+    state.setdefault("current_packet_hashes", {})[str(packet_path)] = file_sha256(
+        packet_path, stage, task_id
+    )
     state.setdefault("current_packets", {}).setdefault(stage, []).append(str(packet_path))
     return packet_path, output_path, task_id
 
@@ -669,6 +685,15 @@ def current_packets(state: dict, stage: str) -> list[tuple[Path, dict]]:
         path = safe_path(raw_path, must_exist=True, reject_symlink=True)
         packet = read_json(path, stage, "coordinator")
         validate_packet(packet, stage, packet.get("task_id", "coordinator"))
+        expected_hash = state.get("current_packet_hashes", {}).get(str(path))
+        require(
+            isinstance(expected_hash, str)
+            and file_sha256(path, stage, packet["task_id"]) == expected_hash,
+            stage,
+            packet["task_id"],
+            "packet_changed",
+            str(path),
+        )
         rows.append((path, packet))
     return rows
 
@@ -683,7 +708,7 @@ def match_artifact_paths(state: dict, stage: str, raw_paths: list[str]) -> list[
         normalized[output] = packet
     require(len(normalized) == len(packets), stage, "coordinator", "duplicate_output_path",
             "$.packets")
-    results: list[tuple[dict, dict, str]] = []
+    artifacts: dict[str, dict] = {}
     seen: set[str] = set()
     for raw_path in raw_paths:
         try:
@@ -696,9 +721,17 @@ def match_artifact_paths(state: dict, stage: str, raw_paths: list[str]) -> list[
         seen.add(key)
         packet = normalized[key]
         artifact = read_json(path, stage, packet["task_id"])
-        results.append((packet, artifact, key))
+        validate_packet_artifact(packet, artifact, state)
+        artifacts[key] = artifact
     require(seen == set(normalized), stage, "coordinator", "missing_artifact", "$.artifacts")
-    return results
+    return [
+        (
+            packet,
+            artifacts[str(safe_path(packet["output_path"]))],
+            str(safe_path(packet["output_path"])),
+        )
+        for _, packet in packets
+    ]
 
 
 def validate_adversarial(packet: dict, value: object) -> None:
@@ -1378,6 +1411,15 @@ def require_current_packet(state: dict, packet_path: Path, packet: dict) -> None
     }
     require(str(packet_path) in active_paths, packet["stage"], packet["task_id"],
             "packet_not_current", str(packet_path))
+    expected_hash = state.get("current_packet_hashes", {}).get(str(packet_path))
+    require(
+        isinstance(expected_hash, str)
+        and file_sha256(packet_path, packet["stage"], packet["task_id"]) == expected_hash,
+        packet["stage"],
+        packet["task_id"],
+        "packet_changed",
+        str(packet_path),
+    )
 
 
 def command_scaffold_artifact(raw_packet_path: str) -> None:
@@ -1451,6 +1493,64 @@ def partition(ids: list[str], count: int) -> list[list[str]]:
     return [bucket for bucket in buckets if bucket]
 
 
+def create_refutation_packets(state: dict, canonical_path: str,
+                               worker_count: int) -> int:
+    canonical_ids = state["canonical_ids"]
+    groups = partition(canonical_ids, min(worker_count, len(canonical_ids)))
+    instructions = load_stage_instructions()["refutation"]
+    for index, assigned in enumerate(groups, start=1):
+        packet_path, output_path, task_id = make_packet(
+            state,
+            stage="refutation",
+            agent_id=f"refuter-{index:02d}",
+            input_paths=[canonical_path],
+            assigned_ids=assigned,
+            lane=None,
+            instructions=instructions,
+        )
+        print(f"PACKET_CREATED refutation {task_id} {packet_path} {output_path}")
+    state["phase"] = "refutation"
+    return len(groups)
+
+
+def create_passthrough_canonical_artifact(
+    state: dict, rows: list[tuple[dict, dict, str]]
+) -> str:
+    task_id = f"canonicalize-coordinator-a1-{uuid.uuid4().hex[:8]}"
+    artifact_path = ROOT / "artifacts" / "dedup" / f"{task_id}.json"
+    canonical_candidates: list[dict] = []
+    for _, artifact, _ in rows:
+        for candidate in artifact["candidates"]:
+            finding = {**candidate, "id": f"F{len(canonical_candidates) + 1:03d}"}
+            canonical_candidates.append({
+                "finding": finding,
+                "source_candidate_ids": [candidate["id"]],
+                "merge_basis": "1:1",
+            })
+    artifact = {
+        "schema_version": SCHEMA_VERSION,
+        "stage": "dedup",
+        "task_id": task_id,
+        "attempt": 1,
+        "agent_id": "coordinator",
+        "canonical_candidates": canonical_candidates,
+    }
+    validate_dedup(
+        {"task_id": task_id, "attempt": 1, "agent_id": "coordinator"},
+        artifact,
+        set(state["raw_ids"]),
+    )
+    atomic_write(artifact_path, artifact)
+    path = str(artifact_path)
+    state["accepted"]["dedup"] = path
+    record_accepted_hashes(state, "dedup", [path])
+    state["canonical_ids"] = [
+        row["finding"]["id"] for row in canonical_candidates
+    ]
+    state["phase"] = "ready_refutation"
+    return path
+
+
 def command_init() -> None:
     if STATE_PATH.exists():
         raise ValidationError("init", "coordinator", "already_initialized", [str(STATE_PATH)])
@@ -1464,6 +1564,7 @@ def command_init() -> None:
     state = {
         "phase": "adversarial",
         "current_packets": {},
+        "current_packet_hashes": {},
         "accepted": {},
         "accepted_hashes": {},
         "runtime_contract_hashes": runtime_contract_hashes("init", "scope"),
@@ -1503,8 +1604,7 @@ def command_seal_adversarial(raw_paths: list[str]) -> None:
     require_worktree_unchanged(scope, "adversarial", "coordinator")
     rows = match_artifact_paths(state, "adversarial", raw_paths)
     all_ids: list[str] = []
-    for packet, artifact, _ in rows:
-        validate_adversarial(packet, artifact)
+    for _, artifact, _ in rows:
         all_ids.extend(candidate["id"] for candidate in artifact["candidates"])
     require(len(all_ids) == len(set(all_ids)), "adversarial", "coordinator",
             "duplicate_candidate_id", "$.candidates")
@@ -1517,6 +1617,12 @@ def command_seal_adversarial(raw_paths: list[str]) -> None:
         save_state(state)
         print(f"STAGE_SEALED adversarial {len(rows)} 0")
         command_finalize()
+        return
+    if len(rows) == 1 or len(all_ids) == 1:
+        path = create_passthrough_canonical_artifact(state, rows)
+        save_state(state)
+        print(f"STAGE_SEALED adversarial {len(rows)} {len(all_ids)}")
+        print(f"STAGE_BYPASSED dedup {len(all_ids)} {path}")
         return
     instructions = load_stage_instructions()["dedup"]
     packet_path, output_path, task_id = make_packet(
@@ -1541,30 +1647,29 @@ def command_accept_dedup(raw_path: str, worker_count: int) -> None:
     validate_scope(scope, "dedup", "coordinator")
     require_worktree_unchanged(scope, "dedup", "coordinator")
     rows = match_artifact_paths(state, "dedup", [raw_path])
-    packet, artifact, path = rows[0]
-    validate_dedup(packet, artifact, set(state["raw_ids"]))
+    _, artifact, path = rows[0]
     canonical_ids = [row["finding"]["id"] for row in artifact["canonical_candidates"]]
     state["accepted"]["dedup"] = path
     record_accepted_hashes(state, "dedup", [path])
     state["current_packets"]["dedup"] = []
     state["canonical_ids"] = canonical_ids
-    groups = partition(canonical_ids, min(worker_count, len(canonical_ids)))
-    stage_instructions = load_stage_instructions()
-    for index, assigned in enumerate(groups, start=1):
-        instructions = stage_instructions["refutation"]
-        packet_path, output_path, task_id = make_packet(
-            state,
-            stage="refutation",
-            agent_id=f"refuter-{index:02d}",
-            input_paths=[path],
-            assigned_ids=assigned,
-            lane=None,
-            instructions=instructions,
-        )
-        print(f"PACKET_CREATED refutation {task_id} {packet_path} {output_path}")
-    state["phase"] = "refutation"
+    group_count = create_refutation_packets(state, path, worker_count)
     save_state(state)
-    print(f"STAGE_ACCEPTED dedup {len(canonical_ids)} {len(groups)}")
+    print(f"STAGE_ACCEPTED dedup {len(canonical_ids)} {group_count}")
+
+
+def command_start_refutation(worker_count: int) -> None:
+    state = load_state()
+    require(state.get("phase") == "ready_refutation", "refutation", "coordinator",
+            "invalid_phase", "$.phase")
+    scope = read_json(SCOPE_PATH, "refutation", "coordinator")
+    validate_scope(scope, "refutation", "coordinator")
+    require_worktree_unchanged(scope, "refutation", "coordinator")
+    group_count = create_refutation_packets(
+        state, state["accepted"]["dedup"], worker_count
+    )
+    save_state(state)
+    print(f"STAGE_READY refutation {len(state['canonical_ids'])} {group_count}")
 
 
 def command_accept_refutation(raw_paths: list[str], worker_count: int) -> None:
@@ -1576,8 +1681,7 @@ def command_accept_refutation(raw_paths: list[str], worker_count: int) -> None:
     require_worktree_unchanged(scope, "refutation", "coordinator")
     rows = match_artifact_paths(state, "refutation", raw_paths)
     covered: list[str] = []
-    for packet, artifact, _ in rows:
-        validate_refutation(packet, artifact, scope)
+    for _, artifact, _ in rows:
         for result in artifact["results"]:
             covered.append(result["candidate_id"])
     require(len(covered) == len(set(covered)), "refutation", "coordinator",
@@ -1605,7 +1709,7 @@ def command_accept_refutation(raw_paths: list[str], worker_count: int) -> None:
         print(f"PACKET_CREATED judgment {task_id} {packet_path} {output_path}")
     state["phase"] = "judgment"
     save_state(state)
-    print(f"STAGE_ACCEPTED refutation {len(covered)} {len(covered)}")
+    print(f"STAGE_ACCEPTED refutation {len(covered)} {len(groups)}")
 
 
 def command_accept_judgment(raw_paths: list[str]) -> None:
@@ -1617,8 +1721,7 @@ def command_accept_judgment(raw_paths: list[str]) -> None:
     require_worktree_unchanged(scope, "judgment", "coordinator")
     rows = match_artifact_paths(state, "judgment", raw_paths)
     covered: list[str] = []
-    for packet, artifact, _ in rows:
-        validate_judgment(packet, artifact, scope)
+    for _, artifact, _ in rows:
         covered.extend(result["candidate_id"] for result in artifact["results"])
     require(len(covered) == len(set(covered)), "judgment", "coordinator",
             "duplicate_candidate_id", "$.results")
@@ -1659,7 +1762,6 @@ def expected_trace_from_state(state: dict) -> dict[str, int]:
 
 
 def assemble_final_payload(state: dict, scope: dict) -> dict:
-    require_accepted_artifacts_unchanged(state)
     findings: list[dict] = []
     rejected_findings: list[dict] = []
     unresolved_findings: list[dict] = []
@@ -1851,6 +1953,11 @@ def command_status() -> None:
             )
     if phase == "finalized":
         print(f"FINAL {ROOT / 'final' / 'final.json'}")
+    elif phase == "ready_refutation":
+        print(
+            f"CANONICAL {len(state['canonical_ids'])} "
+            f"artifact={state['accepted']['dedup']}"
+        )
 
 
 def repository_location(scope: dict, location: dict, field: str, *,
@@ -2081,6 +2188,8 @@ def main(argv: list[str]) -> None:
             command_seal_adversarial(argv[2:])
         elif command == "accept-dedup" and len(argv) == 5 and argv[2] == "--workers":
             command_accept_dedup(argv[4], parse_worker_count(argv[3], "dedup"))
+        elif command == "start-refutation" and len(argv) == 4 and argv[2] == "--workers":
+            command_start_refutation(parse_worker_count(argv[3], "refutation"))
         elif command == "accept-refutation" and len(argv) >= 5 and argv[2] == "--workers":
             command_accept_refutation(argv[4:], parse_worker_count(argv[3], "refutation"))
         elif command == "accept-judgment" and len(argv) >= 3:

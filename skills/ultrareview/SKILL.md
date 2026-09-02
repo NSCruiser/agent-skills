@@ -1,6 +1,6 @@
 ---
 name: ultrareview
-description: Run a read-only adversarial code review through independent review, deduplication, refutation, and final judgment. Use only when the user explicitly requests Ultrareview for a bounded code change or topic and the runtime can launch isolated workers. Do not use for ordinary implementation, unbounded repository audits, or implicit follow-up review.
+description: Run a read-only adversarial code review through independent review, conditional deduplication, refutation, and final judgment. Use only when the user explicitly requests Ultrareview for a bounded code change or topic and the runtime can launch isolated workers. Do not use for ordinary implementation, unbounded repository audits, or implicit follow-up review.
 ---
 
 # Ultrareview
@@ -16,7 +16,7 @@ Read the applicable repository instruction files and [references/pipeline-protoc
 The workflow has exactly one semantic round in each applicable stage:
 
 1. Independent adversarial review through useful, non-overlapping lenses.
-2. One fresh deduplicator that merges only true duplicates and never decides validity.
+2. One fresh deduplicator only when the adversarial stage used more than one reviewer and produced more than one finding in total. It merges only true duplicates and never decides validity. Otherwise, the coordinator preserves every raw finding one-to-one while assigning canonical IDs.
 3. Fresh refuters covering every canonical candidate exactly once.
 4. Fresh judges independently deciding every canonical candidate exactly once.
 
@@ -46,11 +46,11 @@ When callers, contracts, or implementation details needed as supporting evidence
 
 `lenses.json` must split the scope into useful lanes without inventing additional scope. Use `schema_version: 4` for both.
 
-At `init`, the coordinator fixes hashes for `scope.json`, `lenses.json`, `repository.json`, the Schema, stage instructions, and the copied pipeline, and fingerprints the reviewed repository plus every declared evidence repository. Any later change to scope, output language, lenses, repository snapshots, or another runtime contract resource invalidates the run; start a newly authorized semantic run instead of editing an active one.
+At `init`, the coordinator fixes hashes for `scope.json`, `lenses.json`, `repository.json`, the Schema, stage instructions, the copied pipeline, and every generated current packet, and fingerprints the reviewed repository plus every declared evidence repository. It also hashes every accepted stage artifact before downstream work. Any later change to scope, output language, lenses, assignments, repository snapshots, accepted artifacts, or another runtime contract resource invalidates the run; start a newly authorized semantic run instead of editing an active one.
 
 The coordinator rejects Git-visible worktree drift before artifact validation, stage transitions, retries, finalization, and final validation. Treat a mismatch as an incomplete review; report it and do not restore or alter the repository. Use a genuinely read-only filesystem sandbox when the harness offers one because Git status detection does not prevent writes or cover ignored files.
 
-Run `<run-root>/pipeline.py init`, schedule the emitted packets with the active harness, and use the coordinator commands in the protocol between stages. For the refutation and judgment packet creation commands, `--workers` is a maximum: choose it from the visible candidate count, scope breadth, expected inspection cost, and available slots. Prefer one for a small or coherent scope and increase it only when parallel inspection is worth the coordination overhead. Do not pass full capacity by default or hardcode machine capacity into the skill or coordinator.
+Run `<run-root>/pipeline.py init`, schedule the emitted packets with the active harness, and use the coordinator commands in the protocol between stages. After `seal-adversarial`, launch the emitted deduplication packet when present. When the coordinator reports `STAGE_BYPASSED dedup`, choose the refuter maximum and run `<run-root>/pipeline.py start-refutation --workers N` instead. For refutation and judgment packet creation, `--workers` is a maximum: choose it from the visible candidate count, scope breadth, expected inspection cost, and available slots. Prefer one for a small or coherent scope and increase it only when parallel inspection is worth the coordination overhead. Do not pass full capacity by default or hardcode machine capacity into the skill or coordinator.
 
 Start every intermediate worker with only:
 
