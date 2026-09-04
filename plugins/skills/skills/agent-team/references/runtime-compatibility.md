@@ -1,53 +1,49 @@
 # Runtime compatibility
 
-Read this reference only when the active client cannot apply the preferred role, model, reasoning effort, or context setting.
+Read this reference when the active interface cannot directly apply the chosen role, model, reasoning effort, or context. Use the exposed schema and runtime metadata to resolve known incompatibilities before the first call.
 
-## Custom role selection
+## Roles, models, and effort
 
-When the spawn interface exposes a custom agent or role selector and the required role is available, select `scout`, `coder`, `worker`, `senior_worker`, or `reviewer`. The matching custom agent file is the source of truth, so do not also pass model or reasoning overrides.
+The defaults live in [SKILL.md](../SKILL.md). Custom roles are optional. Select one only when the active interface exposes a role selector, the role is registered, and its configuration fits the assignment. Use its configured settings without duplicate model or effort overrides.
 
-When the interface has no role selector, or a newly renamed role is not yet registered in the active session, omit the selector and use the preferred model, reasoning effort, and context fields that remain available. Put the job title in `task_name` and repeat the role instructions in the task packet. Do not claim the persistent custom agent file was selected.
+Otherwise omit the role selector, identify the job in `task_name` and the message, and pass the chosen model and effort through supported fields. A task name does not select a persistent custom role. Do not assume that a file on disk is registered in the current session.
 
-Choosing this fallback before the first spawn because the active schema clearly lacks the role is preflight routing, not a retry. A newly installed or renamed role may require a new Codex task before it appears in the selector.
+When a model or effort is unavailable, choose a supported setting suitable for the assignment if the user's instructions allow it; otherwise retain the work in the main agent or report the specific blocker. Reconsider delegation cost if a routine child would inherit an expensive parent configuration. Do not silently substitute a weaker model for difficult work or claim a user's exact model choice was honored after a substitution.
 
-## Model and effort fields
+When model or effort fields are absent, omit them and treat the settings as inherited or runtime selected. Confirm effective settings from the tool response or runtime metadata when available; otherwise describe only what was requested. Never invent unsupported fields.
 
-Pass the routing table's model and reasoning values explicitly only when no configured custom role was selected.
+## Context and spawn shape
 
-If a requested Sol model is unavailable, omit the model override and use the role's requested effort when possible. Treat the model as inherited or runtime selected.
+Use `fork_turns: "none"` for fresh context where supported. On an interface exposing only `fork_context`, use `fork_context: false` for fresh context. If neither field is exposed, send a self-contained packet and treat inheritance as runtime selected.
 
-When the tool hides model or reasoning fields, omit them. Never invent an unsupported field or infer the effective setting without runtime evidence.
+When the schema requires full-history forks to inherit the parent model and effort, pass `fork_turns: "all"` and omit model, effort, and any role selector that would override those settings. Preserve the needed history. If a different model is essential, use fresh or recent-turn context only when it can retain the required information; otherwise keep the assignment in the main agent.
 
-## Retry budget
+For an interface exposing `task_name`, `message`, `model`, `reasoning_effort`, and `fork_turns`, a fresh bounded coding assignment can use:
 
-Each assignment has one compatibility retry total after its first spawn attempt. The full-history and authorization cases below share that same budget and are mutually exclusive once a retry has been used. After the retry fails, return the assignment to the main agent without another attempt.
+```json
+{
+  "task_name": "coder_cache",
+  "fork_turns": "none",
+  "model": "gpt-5.6-sol",
+  "reasoning_effort": "medium",
+  "message": "<task packet, including ownership, permissions, acceptance, and leaf boundary>"
+}
+```
 
-## Context fields
+Adapt this example to the active schema. With a suitable registered custom role, use the actual role selector instead of explicit model and effort fields.
 
-Use `fork_turns: "none"` when the interface exposes it. On interfaces that expose `fork_context`, use `fork_context: false` as the fresh-context equivalent.
+## Recovery and capacity
 
-If neither field exists, send the complete task packet and treat context inheritance as runtime selected. Do not copy the full parent conversation into the task message.
+Allow at most one compatibility retry per assignment, and only when an observed failure identifies a supported correction. Preserve required context, ownership, and permissions. If the retry fails, return the remaining work to the main agent. Do not use retries to bypass an approval denial.
 
-If the first attempt uses full history and rejects the role selector or fallback model overrides, consume the retry budget by retrying once with fresh context and the complete task packet.
+If a fresh child lacks the authorizing user turn for an already authorized local write, the retry may use the smallest positive `fork_turns` count that includes that turn. This applies only to missing context, not missing approval; retain all original constraints.
 
-If the first attempt is a fresh child that rejects an authorized local write because it cannot see direct user authorization, first confirm that the user authorized that exact class of local work. Consume the retry budget by retrying once with the smallest positive `fork_turns` value that includes the authorizing user turn, while keeping the same ownership, constraints, and leaf boundary. If no direct authorization exists, return the work to the main agent without retrying.
+Use runtime metadata or the active-agent list to respect capacity, including descendants. If capacity is unknown, begin with one useful child and expand only as capacity is established. On a capacity rejection, wait for or reuse an existing agent instead of repeatedly spawning replacements.
 
-## Concurrency
+Before retrying or replacing an assignment that might already have started, check the existing agent's status and any partial changes. Stop its writers before transferring ownership, and preserve valid completed work.
 
-Use runtime metadata or the active-agent list to respect available slots and the configured concurrency limit. If the limit is unavailable, keep the initial team to two or three subagents. On a capacity rejection, wait for or reuse an existing agent; do not repeatedly spawn replacements.
+## Permissions and missing features
 
-## Permissions and approvals
+Children normally inherit the parent's active permission and sandbox policy; runtime overrides may also apply. A configured read-only role can strengthen that boundary, but task text alone does not create operating-system isolation. Apply the user approval requirements in [SKILL.md](../SKILL.md) regardless of the selected role or fallback.
 
-Subagents normally inherit the active parent permission and sandbox policy, and a client may reapply live runtime overrides when it spawns a child. Agent-specific read-only settings can strengthen the default, but task text alone cannot create operating-system isolation. A sandbox approval prompt may surface from the child thread; the coordinator still owns the authorization decision and must not treat the prompt as broader user consent.
-
-Do not delegate an external write, destructive action, purchase, or material scope expansion until the user has given the exact approval required by the active policy. Keep approval decisions in the main agent.
-
-## Missing collaboration features
-
-If subagents are disabled or unavailable, continue in the main agent. Keep intermediate evidence compact and do not simulate or claim child work.
-
-If direct agent-to-agent messaging is unavailable, route the dependency through the main agent. Do not spawn a replacement agent only to relay a message.
-
-## Confirmation
-
-Confirm the effective child role, model, effort, and context policy from the tool response, parent UI, or runtime metadata when available. If confirmation is unavailable, describe only the settings requested, not the settings guaranteed.
+If subagents are unavailable, continue in the main agent. If direct agent-to-agent messaging is unavailable, relay dependencies through the main agent. If stopping an active writer is unsupported, wait for it to finish before reassigning its resources; do not integrate results that conflict with updated requirements.
