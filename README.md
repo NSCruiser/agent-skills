@@ -1,32 +1,31 @@
 # Agent Skills Marketplace
 
-A private, dual-harness plugin marketplace for reusable agent skills. The catalog is split so Codex can discover every skill while Claude Code can discover only portable skills.
+A private, dual-harness marketplace that distributes one `skills` plugin with harness-specific skill visibility.
 
 ## Catalog
 
-| Plugin | Harnesses | Skills |
+| Harness | Plugin | Visible skills |
 | --- | --- | --- |
-| [`skills`](plugins/skills) | Codex and Claude Code | [`ultrareview`](plugins/skills/skills/ultrareview) |
-| [`codex-skills`](plugins/codex-skills) | Codex only | [`agent-team`](plugins/codex-skills/skills/agent-team) |
+| Codex | [`skills`](plugins/skills) | [`ultrareview`](plugins/skills/skills/ultrareview), [`agent-team`](plugins/skills/skills/agent-team) |
+| Claude Code | [`skills`](plugins/skills) | [`ultrareview`](plugins/skills/skills/ultrareview) |
 
-The separation is enforced by two catalogs:
+The two catalogs provide different views of the same source repository:
 
-- [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json) lists both plugins for Codex.
-- [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json) lists only `skills` for Claude Code.
+- [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json) points Codex at the complete plugin directory.
+- [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json) explicitly lists the portable skill paths exposed to Claude Code.
 
 ## Repository layout
 
 ```text
-.agents/plugins/marketplace.json       Codex marketplace: universal + Codex-only
-.claude-plugin/marketplace.json        Claude marketplace: universal only
+.agents/plugins/marketplace.json       Codex marketplace: complete plugin
+.claude-plugin/marketplace.json        Claude marketplace: portable skill view
 .claude/settings.json                  Project registration and auto-update policy
 plugins/
-├── skills/
-│   ├── .codex-plugin/plugin.json
-│   └── skills/ultrareview/
-└── codex-skills/
+└── skills/
     ├── .codex-plugin/plugin.json
-    └── skills/agent-team/
+    └── skills/
+        ├── ultrareview/
+        └── agent-team/
 ```
 
 Each skill remains self-contained. Runtime files must not import paths outside their own skill directory.
@@ -41,14 +40,13 @@ Workspace admins can import this private GitHub repository from **Admin → Plug
 - Path: leave empty
 - Branch: `main` (or leave empty to follow the default branch)
 
-Authorize a GitHub account that can read the private repository. Codex enables daily marketplace sync by default; use **Sync now** to request an immediate refresh. The import reads the Codex catalog and exposes both plugins. Workspace policy, not the committed `policy` block, controls who receives each imported plugin.
+Authorize a GitHub account that can read the private repository. Codex enables daily marketplace sync by default; use **Sync now** to request an immediate refresh. The import reads the Codex catalog and exposes the complete `skills` plugin. Workspace policy, not the committed `policy` block, controls who receives it.
 
 ### Local checkout (manual development flow)
 
 ```bash
 codex plugin marketplace add /absolute/path/to/agent-skills
 codex plugin add skills@agent-skills
-codex plugin add codex-skills@agent-skills
 ```
 
 A local checkout is useful for development but does not pull GitHub automatically. After changing a plugin, bump its `.codex-plugin/plugin.json` version, reinstall it, and test in a new task. Use GitHub workspace sync when background updates are required.
@@ -62,7 +60,7 @@ claude plugin marketplace add NSCruiser/agent-skills
 claude plugin install skills@nscruiser-agent-skills
 ```
 
-The Claude marketplace intentionally has no entry for `codex-skills`. It also omits a fixed plugin version, so Claude Code uses the repository commit SHA for update detection.
+The Claude marketplace uses the repository root as its plugin source and explicitly lists only portable skill paths. It omits a fixed plugin version, so Claude Code uses the repository commit SHA for update detection.
 
 Third-party marketplaces do not auto-update by default. This repository's [`.claude/settings.json`](.claude/settings.json) enables auto-update when Claude Code is running in this project. For global use, merge the same `extraKnownMarketplaces` and `enabledPlugins` entries into `~/.claude/settings.json`.
 
@@ -85,13 +83,13 @@ The GitHub repository remains named `agent-skills`, and Codex uses `agent-skills
 
 ## Classification rule
 
-A skill belongs in `skills` only when its core workflow:
+A skill is added to the Claude marketplace only when its core workflow:
 
 - does not depend on Codex-specific tools, paths, plugins, or invocation policy;
 - remains functional in another Agent Skills-compatible harness without an adapter; and
 - declares any non-standard runtime dependencies.
 
-A skill belongs in `codex-skills` when removing Codex runtime behavior would change or prevent its core outcome. Optional Codex metadata alone does not make a portable skill Codex-only.
+A skill remains Codex-only when removing Codex runtime behavior would change or prevent its core outcome. Codex-only skills stay in the unified plugin but are omitted from the Claude marketplace skill list.
 
 ## Validation
 

@@ -7,12 +7,12 @@
   "plugins": [
     {
       "name": "skills",
-      "source": "./plugins/skills",
+      "source": "./",
       "description": "Portable agent skills that work in Codex and Claude Code.",
       "category": "development",
       "strict": false,
       "skills": [
-        "./skills/ultrareview"
+        "./plugins/skills/skills/ultrareview"
       ]
     }
   ]
