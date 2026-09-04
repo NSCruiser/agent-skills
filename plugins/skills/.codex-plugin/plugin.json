@@ -1,6 +1,6 @@
 {
   "name": "skills",
-  "version": "0.1.0+codex.20260904194025",
+  "version": "0.1.0+codex.20260904195242",
   "description": "Agent skills for Codex, with a portable subset exposed to Claude Code.",
   "author": {
     "name": "NSCruiser",

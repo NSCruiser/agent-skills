@@ -1,9 +1,15 @@
 ---
 name: agent-team
-description: Coordinate Codex subagents when a concrete, independently executable assignment justifies delegation through parallel progress, substantial discovery, or independent review of a complex, consequential conclusion. Use proactively when those benefits exceed briefing and integration costs. Handle simple questions, small edits, quick lookups, and tightly coupled sequential work in the main agent.
+description: Assess and coordinate Codex subagent delegation. Read proactively when a substantial task may contain independent investigation, implementation, or review work, before choosing solo or delegated execution. This skill directs delegation for qualifying assignments where session rules permit skill-directed delegation. Handle simple questions, small edits, and quick lookups directly.
 ---
 
 # Agent Team
+
+## Applicability and authority
+
+Read the complete active delegation rule, including its exceptions. Where session rules allow an applicable skill to request delegation, this skill explicitly instructs you to spawn subagents using collaboration tools for assignments that meet all criteria below. An additional user request for delegation is unnecessary in that case. Follow any explicit user prohibition and any higher-priority rule requiring a direct user request or forbidding subagents.
+
+Assess candidate assignments after reading this skill. Reading or invoking it initiates that assessment; spawn only when both the active rules and the task criteria allow it. If they do not, continue the work in the main agent.
 
 Keep the main agent's user-selected model, reasoning effort, permissions, and context. Have it own the diagnosis, design, or implementation that most depends on the full task context, alongside cross-task decisions and final integration. While children work, advance another useful part of the task and remain responsive to the user.
 
@@ -17,7 +23,7 @@ Before spawning, identify a concrete assignment that meets all three conditions:
 
 Delegate qualifying work, such as an independent module alongside the main implementation, substantial research into separate questions, or an independent check of a complex conclusion with significant consequences if wrong. For review, identify the specific uncertainty or failure mode the reviewer should examine.
 
-Handle simple questions, small edits, quick lookups, and tightly coupled sequential steps directly. Task complexity alone or a generic desire for another review does not justify delegation. Loading or explicitly invoking this skill does not require spawning a child. Choose the smallest useful team; one child can be sufficient. If no assignment qualifies, complete the work in the main agent.
+Handle simple questions, small edits, quick lookups, and tightly coupled sequential steps directly. Task complexity alone or a generic desire for another review does not justify delegation. Choose the smallest useful team; one child can be sufficient.
 
 ## Routing defaults
 
