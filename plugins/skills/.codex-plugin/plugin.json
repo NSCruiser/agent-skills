@@ -1,0 +1,24 @@
+{
+  "name": "skills",
+  "version": "0.1.0",
+  "description": "Portable agent skills that work in Codex and Claude Code.",
+  "author": {
+    "name": "NSCruiser",
+    "url": "https://github.com/NSCruiser"
+  },
+  "homepage": "https://github.com/NSCruiser/agent-skills",
+  "repository": "https://github.com/NSCruiser/agent-skills",
+  "keywords": ["skills", "code-review", "portable"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Skills",
+    "shortDescription": "Portable workflows for Codex and Claude Code.",
+    "longDescription": "Reusable, self-contained workflows that do not require Codex-specific runtime behavior.",
+    "developerName": "NSCruiser",
+    "category": "Developer Tools",
+    "capabilities": ["Read"],
+    "defaultPrompt": [
+      "Run Ultrareview on the current branch."
+    ]
+  }
+}

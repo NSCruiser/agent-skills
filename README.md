@@ -1,65 +1,103 @@
-# Agent Skills
+# Agent Skills Marketplace
 
-A curated collection of reusable AI agent skills, organized into universal workflows and Codex-specific tools.
+A private, dual-harness plugin marketplace for reusable agent skills. The catalog is split so Codex can discover every skill while Claude Code can discover only portable skills.
 
-## Skills
+## Catalog
 
-### Codex-only
+| Plugin | Harnesses | Skills |
+| --- | --- | --- |
+| [`skills`](plugins/skills) | Codex and Claude Code | [`ultrareview`](plugins/skills/skills/ultrareview) |
+| [`codex-skills`](plugins/codex-skills) | Codex only | [`agent-team`](plugins/codex-skills/skills/agent-team) |
 
-| Skill | Description |
-| --- | --- |
-| [`agent-team`](skills/codex/agent-team) | Coordinates job-specific Codex subagents for substantial work that can be split into independent assignments. Based on Eric Provencher's [*Practical multi-agent orchestration in Codex*](https://x.com/pvncher/status/2080707291603407077). |
+The separation is enforced by two catalogs:
 
-### Universal
-
-| Skill | Description |
-| --- | --- |
-| [`ultrareview`](skills/universal/ultrareview) | Runs a portable read-only adversarial code review with independent review, deduplication, Ponytail-guided refutation, and selective final judgment. Inspired by Claude Code's [dynamic workflows](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code). |
-
-`ultrareview` uses a Python/JSON pipeline and self-contained filesystem packets that any harness with isolated worker tasks can execute. Each run requires the current `ponytail-review` `SKILL.md`; the bootstrap freezes that policy so later plugin updates affect new runs without changing an active run. It retains optional Codex guidance and `agents/openai.yaml` metadata without depending on those features for its core workflow.
+- [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json) lists both plugins for Codex.
+- [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json) lists only `skills` for Claude Code.
 
 ## Repository layout
 
 ```text
-skills/
-├── codex/       Skills whose core behavior requires Codex runtime semantics.
-└── universal/   Self-contained skills that work without a Codex-specific runtime.
+.agents/plugins/marketplace.json       Codex marketplace: universal + Codex-only
+.claude-plugin/marketplace.json        Claude marketplace: universal only
+.claude/settings.json                  Project registration and auto-update policy
+plugins/
+├── skills/
+│   ├── .codex-plugin/plugin.json
+│   └── skills/ultrareview/
+└── codex-skills/
+    ├── .codex-plugin/plugin.json
+    └── skills/agent-team/
 ```
 
-Every skill directory is independently installable and keeps its own `SKILL.md`, references, scripts, assets, metadata, and tests. Runtime files must not hardcode or import paths outside their skill directory; declared CLI-supplied policies may be snapshotted into an isolated run.
+Each skill remains self-contained. Runtime files must not import paths outside their own skill directory.
 
-## Install in Codex
+## Codex
 
-### Snapshot install from GitHub
+### GitHub workspace sync (automatic)
 
-Use Codex's bundled skill installer to copy selected skills into `${CODEX_HOME:-$HOME/.codex}/skills`:
+Workspace admins can import this private GitHub repository from **Admin → Plugins → Add → Import marketplace**:
+
+- Source: `https://github.com/NSCruiser/agent-skills`
+- Path: leave empty
+- Branch: `main` (or leave empty to follow the default branch)
+
+Authorize a GitHub account that can read the private repository. Codex enables daily marketplace sync by default; use **Sync now** to request an immediate refresh. The import reads the Codex catalog and exposes both plugins. Workspace policy, not the committed `policy` block, controls who receives each imported plugin.
+
+### Local checkout (manual development flow)
 
 ```bash
-python3 "${CODEX_HOME:-$HOME/.codex}/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
-  --repo NSCruiser/agent-skills \
-  --path skills/codex/agent-team skills/universal/ultrareview
+codex plugin marketplace add /absolute/path/to/agent-skills
+codex plugin add skills@agent-skills
+codex plugin add codex-skills@agent-skills
 ```
 
-This is a snapshot install. The installer intentionally stops when a destination already exists, so it does not act as an updater.
+A local checkout is useful for development but does not pull GitHub automatically. After changing a plugin, bump its `.codex-plugin/plugin.json` version, reinstall it, and test in a new task. Use GitHub workspace sync when background updates are required.
 
-## Install in other harnesses
+## Claude Code
 
-Install or copy [`skills/universal/ultrareview`](skills/universal/ultrareview) with the harness's native skill mechanism. Also install `ponytail-review` and supply its current `SKILL.md` path when bootstrapping a run. The harness must provide Git, Python 3, isolated worker tasks, waiting/status primitives, and worker access to the reviewed repository plus a shared temporary directory; no Codex-specific adapter is required.
+Add this GitHub marketplace, then install the universal plugin:
 
-## Classification
+```bash
+claude plugin marketplace add NSCruiser/agent-skills
+claude plugin install skills@agent-skills
+```
 
-A skill belongs in `skills/universal/` only when its core workflow:
+The Claude marketplace intentionally has no entry for `codex-skills`. It also omits a fixed plugin version, so Claude Code uses the repository commit SHA for update detection.
 
-- does not depend on Codex-specific tools, agent parameters, paths, plugins, or invocation policy;
+Third-party marketplaces do not auto-update by default. This repository's [`.claude/settings.json`](.claude/settings.json) enables auto-update when Claude Code is running in this project. For global use, merge the same `extraKnownMarketplaces` and `enabledPlugins` entries into `~/.claude/settings.json`.
+
+For a private repository, interactive installs and manual updates use the machine's Git credentials. GitHub shorthand clones over SSH by default, so the most reliable background update setup is a key already loaded in `ssh-agent`. If background refreshes can fail, preserve the last working cache:
+
+```bash
+export CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE=1
+```
+
+Manual refresh remains available:
+
+```bash
+claude plugin marketplace update agent-skills
+claude plugin update skills@agent-skills
+```
+
+## Naming
+
+`agent-skills` is a valid marketplace/repository name in both Codex and Claude Code. Claude reserves the marketplace names `org`, `org-provisioned`, and `unknown`; `agent-skills` is not one of them. Codex requires a compatible identifier but does not document `agent-skills` as reserved.
+
+## Classification rule
+
+A skill belongs in `skills` only when its core workflow:
+
+- does not depend on Codex-specific tools, paths, plugins, or invocation policy;
 - remains functional in another Agent Skills-compatible harness without an adapter; and
-- declares any non-standard runtime dependencies it requires.
+- declares any non-standard runtime dependencies.
 
-A skill belongs in `skills/codex/` when removing Codex runtime behavior would change or prevent its core outcome. Optional Codex UI metadata alone does not make an otherwise portable skill Codex-only.
+A skill belongs in `codex-skills` when removing Codex runtime behavior would change or prevent its core outcome. Optional Codex metadata alone does not make a portable skill Codex-only.
 
 ## Validation
 
-Validate each skill after changing it. Skills with deterministic scripts should also keep behavior-focused tests alongside the skill. For example:
-
 ```bash
-python3 skills/universal/ultrareview/tests/test_pipeline.py
+python3 plugins/skills/skills/ultrareview/tests/test_pipeline.py
+claude plugin validate .
 ```
+
+Codex plugin manifests should also be validated with the bundled `plugin-creator` validator before release.

@@ -1,0 +1,19 @@
+{
+  "name": "agent-skills",
+  "description": "Portable skills from NSCruiser's private agent-skills repository.",
+  "owner": {
+    "name": "NSCruiser"
+  },
+  "plugins": [
+    {
+      "name": "skills",
+      "source": "./plugins/skills",
+      "description": "Portable agent skills that work in Codex and Claude Code.",
+      "category": "development",
+      "strict": false,
+      "skills": [
+        "./skills/ultrareview"
+      ]
+    }
+  ]
+}

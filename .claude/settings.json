@@ -1,0 +1,14 @@
+{
+  "extraKnownMarketplaces": {
+    "agent-skills": {
+      "source": {
+        "source": "github",
+        "repo": "NSCruiser/agent-skills"
+      },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "skills@agent-skills": true
+  }
+}

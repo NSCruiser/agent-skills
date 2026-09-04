@@ -1,0 +1,24 @@
+{
+  "name": "codex-skills",
+  "version": "0.1.0",
+  "description": "Agent skills whose core workflows require Codex runtime semantics.",
+  "author": {
+    "name": "NSCruiser",
+    "url": "https://github.com/NSCruiser"
+  },
+  "homepage": "https://github.com/NSCruiser/agent-skills",
+  "repository": "https://github.com/NSCruiser/agent-skills",
+  "keywords": ["skills", "codex", "multi-agent"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Codex Skills",
+    "shortDescription": "Workflows built specifically for the Codex runtime.",
+    "longDescription": "Reusable workflows that depend on Codex tools, subagents, or other Codex-specific runtime behavior.",
+    "developerName": "NSCruiser",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive"],
+    "defaultPrompt": [
+      "Use agent-team to split this task across Codex subagents."
+    ]
+  }
+}
