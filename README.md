@@ -59,7 +59,7 @@ Add this GitHub marketplace, then install the universal plugin:
 
 ```bash
 claude plugin marketplace add NSCruiser/agent-skills
-claude plugin install skills@agent-skills
+claude plugin install skills@nscruiser-agent-skills
 ```
 
 The Claude marketplace intentionally has no entry for `codex-skills`. It also omits a fixed plugin version, so Claude Code uses the repository commit SHA for update detection.
@@ -75,13 +75,13 @@ export CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE=1
 Manual refresh remains available:
 
 ```bash
-claude plugin marketplace update agent-skills
-claude plugin update skills@agent-skills
+claude plugin marketplace update nscruiser-agent-skills
+claude plugin update skills@nscruiser-agent-skills
 ```
 
 ## Naming
 
-`agent-skills` is a valid marketplace/repository name in both Codex and Claude Code. Claude reserves the marketplace names `org`, `org-provisioned`, and `unknown`; `agent-skills` is not one of them. Codex requires a compatible identifier but does not document `agent-skills` as reserved.
+The GitHub repository remains named `agent-skills`, and Codex uses `agent-skills` as its marketplace ID. Claude Code reserves `agent-skills` for Anthropic-owned marketplaces, so its marketplace ID is `nscruiser-agent-skills`. The Claude plugin selector is therefore `skills@nscruiser-agent-skills`.
 
 ## Classification rule
 
