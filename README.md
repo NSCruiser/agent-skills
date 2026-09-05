@@ -1,6 +1,6 @@
 # Agent Skills Marketplace
 
-A private, dual-harness marketplace that distributes one `skills` plugin with harness-specific skill visibility.
+A public, dual-harness marketplace that distributes one `skills` plugin with harness-specific skill visibility.
 
 ## Catalog
 
@@ -34,13 +34,13 @@ Each skill remains self-contained. Runtime files must not import paths outside t
 
 ### GitHub workspace sync (automatic)
 
-Workspace admins can import this private GitHub repository from **Admin → Plugins → Add → Import marketplace**:
+Workspace admins can import this GitHub repository from **Admin → Plugins → Add → Import marketplace**:
 
 - Source: `https://github.com/NSCruiser/agent-skills`
 - Path: leave empty
 - Branch: `main` (or leave empty to follow the default branch)
 
-Authorize a GitHub account that can read the private repository. Codex enables daily marketplace sync by default; use **Sync now** to request an immediate refresh. The import reads the Codex catalog and exposes the complete `skills` plugin. Workspace policy, not the committed `policy` block, controls who receives it.
+Codex enables daily marketplace sync by default; use **Sync now** to request an immediate refresh. The import reads the Codex catalog and exposes the complete `skills` plugin. Workspace policy, not the committed `policy` block, controls who receives it.
 
 ### Local checkout (manual development flow)
 
@@ -64,7 +64,7 @@ The Claude marketplace uses the repository root as its plugin source and explici
 
 Third-party marketplaces do not auto-update by default. This repository's [`.claude/settings.json`](.claude/settings.json) enables auto-update when Claude Code is running in this project. For global use, merge the same `extraKnownMarketplaces` and `enabledPlugins` entries into `~/.claude/settings.json`.
 
-For a private repository, interactive installs and manual updates use the machine's Git credentials. GitHub shorthand clones over SSH by default, so the most reliable background update setup is a key already loaded in `ssh-agent`. If background refreshes can fail, preserve the last working cache:
+To preserve the last working cache if a background refresh fails:
 
 ```bash
 export CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE=1
