@@ -22,7 +22,7 @@ For an interface exposing `task_name`, `message`, `model`, `reasoning_effort`, a
 
 ```json
 {
-  "task_name": "coder_cache",
+  "task_name": "worker_cache",
   "fork_turns": "none",
   "model": "gpt-5.6-sol",
   "reasoning_effort": "medium",
