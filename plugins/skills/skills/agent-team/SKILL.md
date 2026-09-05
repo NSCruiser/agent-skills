@@ -21,7 +21,7 @@ Use the smallest useful team. Keep tightly coupled steps in the main agent. For 
 
 | Assignment | Role | Model | Effort |
 |---|---|---|---|
-| Low-stakes, fully specified tasks with inexpensive acceptance checks, including localization | `light_worker` | `gpt-5.6-luna` | `high` |
+| Low-stakes, fully specified tasks with inexpensive acceptance checks | `light_worker` | `gpt-5.6-luna` | `high` |
 | Read-only lookup and source collection | `scout` | `gpt-5.6-sol` | `low` |
 | Bounded implementation or execution | `worker` | `gpt-5.6-sol` | `medium` |
 | Complex independent implementation or diagnosis | `senior_worker` | `gpt-6-astra` | `high` |
@@ -31,8 +31,6 @@ Use the smallest useful team. Keep tightly coupled steps in the main agent. For 
 These are defaults; honor explicit model choices and use supported runtime settings. Registered custom roles are optional. Both review roles are read-only leaves with the same evidence requirements. Select one role appropriate to each review scope.
 
 Use `light_worker` when the inputs and transformation rules are supplied, mistakes are cheap to correct, and the main agent can verify the result inexpensively. Examples include routine localization, extraction into a supplied schema, and mechanical edits with an explicit mapping. Use `worker` or `senior_worker` when the assignment requires discovery, ambiguous judgment, or consequential decisions. A short task is not necessarily low-stakes; the delegation benefit test still applies.
-
-For localization, supply the target locale, source context, and any glossary or tone requirements; preserve keys, placeholders, markup, and pluralization syntax. Check meaning as well as structure. Resolve consequential ambiguity in the main agent or route it to a stronger role; use qualified language review when needed. Treat language-pair quality as something to verify on representative samples, not a guarantee from the role or reasoning effort.
 
 ## Coordination and completion
 
