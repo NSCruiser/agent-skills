@@ -14,7 +14,7 @@ When model or effort fields are absent, omit them and treat the settings as inhe
 
 ## Context and spawn shape
 
-Use `fork_turns: "none"` for fresh context where supported. On an interface exposing only `fork_context`, use `fork_context: false` for fresh context. If neither field is exposed, send a self-contained packet and treat inheritance as runtime selected.
+Apply the context defaults and required settings from [SKILL.md](../SKILL.md). Use `fork_turns: "none"` for fresh context where supported. On an interface exposing only `fork_context`, use `fork_context: false` for fresh context. If neither field is exposed, send a self-contained packet and treat inheritance as runtime selected. If the selected configuration requires fresh context and the runtime cannot guarantee it, keep the work in the main agent or select another suitable role.
 
 When the schema requires full-history forks to inherit the parent model and effort, pass `fork_turns: "all"` and omit model, effort, and any role selector that would override those settings. Preserve the needed history. If a different model is essential, use fresh or recent-turn context only when it can retain the required information; otherwise keep the assignment in the main agent.
 

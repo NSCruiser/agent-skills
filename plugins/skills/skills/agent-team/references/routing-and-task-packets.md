@@ -12,9 +12,7 @@ Name assignments `<job>_<scope>`, such as `scout_auth`, `worker_cache`, or `seni
 
 ## Context selection
 
-Use `fork_turns: "none"` for a self-contained assignment. Include the relevant user decisions, authorization boundaries, constraints, paths, and inputs in its task packet.
-
-Use a positive `fork_turns` count when recent turns contain decisions or source material that would be risky to restate. Use `fork_turns: "all"` when the full history is necessary. Check whether the runtime requires full-history children to inherit model and effort before constructing the call; see [runtime-compatibility.md](runtime-compatibility.md).
+Use the context defaults and required settings in [SKILL.md](../SKILL.md). Include the relevant user decisions, authorization boundaries, task-specific tool and safety restrictions, paths, and inputs in a fresh-context packet. Inherit turns only when they contain necessary decisions or source material that would be risky to restate and the selected configuration permits it; see [runtime-compatibility.md](runtime-compatibility.md) for supported fields and inheritance constraints.
 
 For independent review, provide the requirements, artifacts, relevant constraints, and validation evidence. Let the reviewer form its own conclusion without supplying the author's preferred verdict. Preserve necessary user context even when fresh context is impractical.
 

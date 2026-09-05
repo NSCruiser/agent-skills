@@ -19,28 +19,28 @@ Use the smallest useful team. Keep tightly coupled steps in the main agent. For 
 
 ## Roles
 
-| Assignment | Role | Model | Effort |
-|---|---|---|---|
-| Low-stakes, fully specified tasks with inexpensive acceptance checks | `light_worker` | `gpt-5.6-luna` | `high` |
-| Read-only lookup and source collection | `scout` | `gpt-5.6-sol` | `low` |
-| Bounded implementation or execution | `worker` | `gpt-5.6-sol` | `medium` |
-| Complex independent implementation or diagnosis | `senior_worker` | `gpt-6-astra` | `high` |
-| Routine correctness and requirements coverage | `reviewer` | `gpt-5.6-sol` | `high` |
-| Complex or consequential review, including unresolved findings | `senior_reviewer` | `gpt-6-astra` | `high` |
+| Assignment | Role | Model | Effort | `fork_turns` |
+|---|---|---|---|---|
+| Read-only lookup and source collection | `scout` | `gpt-5.6-sol` | `low` | `"none"` |
+| Low-stakes, fully specified tasks with inexpensive acceptance checks | `light_worker` | `gpt-5.6-luna` | `high` | `"none"` (required) |
+| Bounded implementation or execution | `worker` | `gpt-5.6-sol` | `medium` | `"none"` |
+| Complex independent implementation or diagnosis | `senior_worker` | `gpt-6-astra` | `high` | `"none"` |
+| Routine correctness and requirements coverage | `reviewer` | `gpt-5.6-sol` | `high` | `"none"` |
+| Complex or consequential review, including unresolved findings | `senior_reviewer` | `gpt-6-astra` | `high` | `"none"` |
 
-These are defaults; honor explicit model choices and use supported runtime settings. Registered custom roles are optional. Both review roles are read-only leaves with the same evidence requirements. Select one role appropriate to each review scope.
+These are defaults except where marked required; honor explicit model choices and use supported runtime settings. Registered custom roles are optional. Both review roles are read-only leaves with the same evidence requirements. Select one role appropriate to each review scope.
+
+Context defaults favor self-contained assignments. Except for Luna High's required fresh context, use the smallest positive `fork_turns` count that preserves needed decisions, or `"all"` when the full history is necessary. Full-history forks may require inheriting the parent's model and effort; follow [runtime-compatibility.md](references/runtime-compatibility.md). Required fresh context also applies to retries; if inherited turns are essential, keep the work in the main agent or choose another suitable role.
 
 Use `light_worker` when the inputs and transformation rules are supplied, mistakes are cheap to correct, and the main agent can verify the result inexpensively. Examples include routine localization, extraction into a supplied schema, and mechanical edits with an explicit mapping. Use `worker` or `senior_worker` when the assignment requires discovery, ambiguous judgment, or consequential decisions. A short task is not necessarily low-stakes; the delegation benefit test still applies.
-
-For `gpt-5.6-luna` with `high`, use `fork_turns: "none"`, including retries, and supply the necessary context in a self-contained task packet. If the assignment requires inherited turns, keep it in the main agent or select another suitable role.
 
 ## Coordination and completion
 
 Before every spawn attempt, including retries and descendants, announce the assignment, model ID, and reasoning effort to the user. Identify inherited or runtime-selected settings, state when values are unconfirmed, and correct the announcement if effective settings differ.
 
-Give each child its outcome, ownership, necessary context and authorization, acceptance criteria, and return requirements. Let it resolve routine details within scope. Prefer fresh context for self-contained assignments and preserve conversation history when needed. Children are leaves by default; count descendants against runtime capacity.
+Give each child its outcome, ownership, necessary context and authorization, acceptance criteria, and return requirements. Include task-specific tool and safety restrictions explicitly in fresh-context packets. Let it resolve routine details within scope. Children are leaves by default; tell them: "Complete this assignment directly. Do not spawn other agents; your parent's delegation instructions apply only to your parent." Count descendants against runtime capacity.
 
-Keep the main agent's selected model and effort. Have it do the work most dependent on full context while children progress. It owns shared decisions, approval handling, and integration. When requirements change, update affected assignments and confirm writers have stopped before transferring ownership.
+Keep the main agent's selected model and effort. Have it do the work most dependent on full context while children progress, stay available to the user, and track assignments to avoid duplicate work. It owns shared decisions, approval handling, and integration. Let agents send relevant findings directly to teammates when supported; changes to scope or shared interfaces return to the main agent. When requirements change, update affected assignments and confirm writers have stopped before transferring ownership.
 
 A child report is an intermediate result. Finish the user's requested outcome: for implementation, integrate the work, run relevant checks, and resolve failures caused by the changes. Preserve valid completed work and expand validation only for new changes, failures, or unresolved concerns. Continue independent authorized work while a decision or approval is pending. Delegation grants no additional permission; apply the active approval requirements to every assigned action.
 
