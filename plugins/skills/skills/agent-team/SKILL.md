@@ -32,6 +32,8 @@ These are defaults; honor explicit model choices and use supported runtime setti
 
 Use `light_worker` when the inputs and transformation rules are supplied, mistakes are cheap to correct, and the main agent can verify the result inexpensively. Examples include routine localization, extraction into a supplied schema, and mechanical edits with an explicit mapping. Use `worker` or `senior_worker` when the assignment requires discovery, ambiguous judgment, or consequential decisions. A short task is not necessarily low-stakes; the delegation benefit test still applies.
 
+For `gpt-5.6-luna` with `high`, use `fork_turns: "none"`, including retries, and supply the necessary context in a self-contained task packet. If the assignment requires inherited turns, keep it in the main agent or select another suitable role.
+
 ## Coordination and completion
 
 Before every spawn attempt, including retries and descendants, announce the assignment, model ID, and reasoning effort to the user. Identify inherited or runtime-selected settings, state when values are unconfirmed, and correct the announcement if effective settings differ.

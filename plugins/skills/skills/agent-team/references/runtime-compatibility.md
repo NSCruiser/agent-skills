@@ -36,7 +36,7 @@ Adapt this example to the active schema. With a suitable registered custom role,
 
 Allow at most one compatibility retry per assignment, and only when an observed failure identifies a supported correction. Preserve required context, ownership, and permissions. If the retry fails, return the remaining work to the main agent. Do not use retries to bypass an approval denial.
 
-If a fresh child lacks the authorizing user turn for an already authorized local write, the retry may use the smallest positive `fork_turns` count that includes that turn. This applies only to missing context, not missing approval; retain all original constraints.
+If a fresh child lacks the authorizing user turn for an already authorized local write, the retry may use the smallest positive `fork_turns` count that includes that turn, unless the selected model and effort require fresh context under [SKILL.md](../SKILL.md). This applies only to missing context, not missing approval; retain all original constraints.
 
 Use runtime metadata or the active-agent list to respect capacity, including descendants. If capacity is unknown, begin with one useful child and expand only as capacity is established. On a capacity rejection, wait for or reuse an existing agent instead of repeatedly spawning replacements.
 
