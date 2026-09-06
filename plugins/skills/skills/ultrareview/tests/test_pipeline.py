@@ -1120,6 +1120,51 @@ class PipelineCase(unittest.TestCase):
         failure = self.command("status", expected_code=2)
         self.assertIn("runtime_contract_changed", failure.stdout)
 
+    def test_effective_instructions_snapshot_survives_retry_and_finalization(self) -> None:
+        external_rules = self.root / "user-rules.md"
+        external_rules.write_text("Use Simplified Chinese for review prose.\n", encoding="utf-8")
+        rules_link = self.root / "AGENTS.md"
+        rules_link.symlink_to(external_rules)
+        scope_path = self.run_root / "scope.json"
+        scope = json.loads(scope_path.read_text(encoding="utf-8"))
+        scope["effective_instructions"] = [rules_link.read_text(encoding="utf-8").strip()]
+        scope["output_language"] = "Simplified Chinese"
+        write_json(scope_path, scope)
+        self.command("init")
+
+        external_rules.unlink()
+        packet_path, _ = self.one_packet("adversarial")
+        self.command("retry-packet", str(packet_path))
+        state = json.loads((self.run_root / ".pipeline-state.json").read_text(encoding="utf-8"))
+        current_packet = Path(state["current_packets"]["adversarial"][0])
+        packet = json.loads(current_packet.read_text(encoding="utf-8"))
+        self.assertEqual(json.loads(Path(packet["scope_path"]).read_text(encoding="utf-8")), scope)
+        artifact_path = self.write_adversarial_for_packet(current_packet, [])
+        self.command("seal-adversarial", str(artifact_path))
+        self.command("validate-final")
+        final = json.loads((self.run_root / "final" / "final.json").read_text(encoding="utf-8"))
+        self.assertEqual(final["scope"]["effective_instructions"], scope["effective_instructions"])
+
+        scope["effective_instructions"] = ["Use English for review prose."]
+        write_json(scope_path, scope)
+        failure = self.command("validate-final", expected_code=2)
+        self.assertIn("runtime_contract_changed", failure.stdout)
+
+    def test_effective_instructions_reject_malformed_snapshots(self) -> None:
+        scope_path = self.run_root / "scope.json"
+        scope = json.loads(scope_path.read_text(encoding="utf-8"))
+        for invalid in (None, "Follow these rules", {}, [""], [1]):
+            with self.subTest(invalid=invalid):
+                scope["effective_instructions"] = invalid
+                write_json(scope_path, scope)
+                failure = self.command("init", expected_code=2)
+                self.assertIn("$.effective_instructions", failure.stdout)
+                self.assertEqual(failure.stderr, "")
+
+        scope["effective_instructions"] = []
+        write_json(scope_path, scope)
+        self.command("init")
+
     def test_change_scope_requires_immutable_comparison_oid(self) -> None:
         for arguments in (
             ["config", "user.name", "Ultrareview Test"],

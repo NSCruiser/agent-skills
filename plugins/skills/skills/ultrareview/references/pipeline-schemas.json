@@ -249,6 +249,10 @@
         "comparison_base": { "type": ["string", "null"] },
         "topic": { "type": ["string", "null"] },
         "output_language": { "type": "string", "minLength": 1 },
+        "effective_instructions": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
         "exclusions": {
           "type": "array",
           "items": { "type": "string" }

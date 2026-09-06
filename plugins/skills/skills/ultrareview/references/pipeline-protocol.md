@@ -6,7 +6,11 @@ Read this reference before creating an Ultrareview run. The protocol keeps detai
 
 The coordinator scripts and artifacts are portable across harnesses. The active harness needs Git and Python 3, must launch isolated worker tasks and wait for their completion, and must give every worker access to the same temporary run directory and reviewed repository. Map those operations to the harness's native task primitives; no Codex tool name or parameter is part of the protocol contract.
 
-When fresh worker contexts are supported, use them. In Codex, use `spawn_agent` with `fork_turns: "none"` and the collaboration wait/status primitives. If a harness has no context-control field, send only the self-contained start prompt and packet path. In every harness, workers are leaves and task replies contain only compact receipts.
+Every adversarial, deduplication, refutation, and judgment worker, including every retry, defaults to the main agent's current model and reasoning effort. Only an explicit user request authorizes an override; another skill's role-based model defaults do not apply. Fresh context changes history exposure, not model configuration. Use the active harness's supported inheritance mechanism. If it cannot confirm or preserve either setting, disclose the actual known state and limitation; do not silently substitute settings or claim verified inheritance without runtime evidence.
+
+When fresh worker contexts are supported, use them. If a harness has no context-control field, send only the self-contained start prompt and packet path. In every harness, workers are leaves and task replies contain only compact receipts.
+
+Codex only: use `spawn_agent` with mandatory `fork_turns: "none"` and the collaboration wait/status primitives; omit model and reasoning overrides when the active tool contract supports inheritance. Count the orchestrator and all active workers against Codex's reported concurrency limit. These tool names and parameters do not apply to other harnesses. Fresh context alone does not prove model inheritance.
 
 ## Context boundary
 
@@ -48,6 +52,10 @@ The bootstrap script binds the resolved repository path in `repository.json` and
 
 At `init`, hash `repository.json`, `scope.json`, `lenses.json`, `pipeline-schemas.json`, `stage-instructions.json`, and the copied `pipeline.py`. Hash each generated current packet as well. Every later coordinator command rejects a changed contract resource or current packet; scope, output language, lenses, instructions, and assignments cannot drift inside one authorized run.
 
+New scopes must explicitly include `effective_instructions`: an array of non-empty strings, with `[]` allowed. Capture existing authorization, effective user constraints, and applicable external or symlinked instruction-file rules after the orchestrator reads them; retain the necessary rules rather than the entire conversation. Resolve conflicts with skill or repository guidance in favor of user instructions, subject to higher-priority runtime rules, and report genuine remaining conflicts. Preserve an existing user language preference when setting `output_language`; infer language from the current request only when no explicit preference applies. Older v4 scopes may omit `effective_instructions`, which workers treat as `[]`.
+
+`instruction_files` remains limited to readable, absolute, non-symlink files inside the reviewed repository. Applicable rules outside that boundary belong in `effective_instructions`, not in additional worker file paths. The scope hash protects this snapshot, but the original external rules are not tracked for later drift. A change to effective constraints requires a newly authorized run rather than an edit to the active scope.
+
 Record `scope.baseline_worktree_status` as the exact output lines from `git -C <repository> status --short --untracked-files=all` immediately before `init`. When supporting evidence lives in another Git repository, add its absolute root and exact status to optional `scope.evidence_repositories`. The reviewed finding location remains in `scope.repository_path`; evidence and qualification reachability steps may use absolute, current-side paths inside a declared evidence repository. Relative paths always resolve inside the reviewed repository. Material outside these Git roots uses `location: null` plus a concrete reference.
 
 At `init`, the coordinator fingerprints HEAD, staged and unstaged binary diffs, and non-ignored untracked contents for the reviewed repository and every declared evidence repository. It compares each status and fingerprint before validating artifacts, advancing stages, retrying, finalizing, and validating the final payload. Stop on the corresponding worktree or snapshot drift error; do not repair or restore any repository. This detects Git-visible drift but is not a substitute for a read-only filesystem sandbox.
@@ -84,6 +92,7 @@ JSON Schema cannot express every relationship between records. The coordinator m
 20. Every `scope.evidence_repositories` entry names a unique absolute Git repository root other than the reviewed repository and records its exact baseline worktree status. The coordinator fingerprints every declared repository at `init` and rejects later status, HEAD, diff, or untracked-content drift.
 21. Primary finding and replacement-finding locations stay inside the reviewed repository. Supporting evidence and qualification reachability locations may additionally use an absolute path inside a declared evidence repository and must use side `new`; undeclared external paths and cross-repository old-side locations are rejected during artifact validation.
 22. Every adversarial artifact records at least one inspected path and one completed check, including artifacts with no candidates.
+23. Optional `scope.effective_instructions` is an array of non-empty strings, with an empty array allowed. Its contents are bound by the existing scope hash; absence in an older v4 scope means an empty snapshot.
 
 The coordinator prints only status, counts, task IDs, packet paths, output paths, reason codes, and invalid field paths. It never prints findings, evidence, recommendations, raw JSON, or packet contents.
 
@@ -104,14 +113,14 @@ Do not schedule extra passes because a candidate is important, uncertain, or con
 
 Every packet follows the fixed `task_packet` Schema and contains the complete instructions the worker needs. A packet includes the worker ID, scope path, fixed Schema path, coordinator path, input artifact paths, assigned IDs, output path, complete `validation_command` argv, stage instructions, task ID, and attempt number.
 
-Every packet must tell the worker to read `scope.json` first, then read and follow every file listed in `scope.instruction_files`. Workers may start with a fresh context and cannot rely on instructions already read by the orchestrator. The coordinator builds these instructions from the packaged `stage-instructions.json`; session-specific domain guidance belongs in scope, lenses, or repository instruction files rather than the fixed templates.
+Every packet must tell the worker to read `scope.json` first and apply `effective_instructions` (default `[]`), then read applicable files listed in `scope.instruction_files`. User instructions take precedence over skill or repository guidance, subject to higher-priority runtime rules; report genuine remaining conflicts. Workers may start with a fresh context and cannot rely on instructions already read by the orchestrator. The coordinator builds these instructions from the packaged `stage-instructions.json`; session-specific constraints belong in the effective-instruction snapshot, with review focus in scope or lenses and repository guidance in the applicable instruction files.
 
 Use these stage instructions:
 
-1. An adversarial packet names the assigned lane and requires direct inspection, at least one recorded inspected path and check, complete coverage of that lane, a concrete manifestation for every candidate, and an empty candidate list when no issue qualifies. It also distinguishes primary finding locations from supporting locations in declared evidence repositories.
+1. An adversarial packet names the assigned lane and requires direct inspection, at least one recorded inspected path and check, complete coverage of that lane, a concrete manifestation for every candidate, and an empty candidate list when no issue qualifies. It excludes pre-existing problems only in change reviews; existing defects inside a topic review's named scope remain eligible. It also distinguishes primary finding locations from supporting locations in declared evidence repositories.
 2. When deduplication is applicable, a dedup packet requires complete raw ID coverage, merging only true duplicates, preserving the clearest accurate manifestation, and no decision on validity.
-3. A refutation packet requires direct inspection of the relevant diff, source, callers, and tests; a complete qualification gate; and correctness, reachability, scope, impact, and proportionality analysis for every assigned canonical ID.
-4. A judgment packet independently repeats the qualification gate and direct inspection before one binding disposition for every assigned canonical ID, including candidates the refuter upheld and correction of an inaccurate finding when modifying it.
+3. A refutation packet requires independent inspection of each assigned candidate and the necessary diff, source, callers, contracts, tests, and history; a complete qualification gate; and correctness, reachability, scope, impact, and proportionality analysis for every assigned canonical ID. Expand inspection only when the evidence is insufficient to decide the candidate.
+4. A judgment packet independently repeats that candidate-focused inspection and qualification gate before one binding disposition for every assigned canonical ID, including candidates the refuter upheld and correction of an inaccurate finding when modifying it. Neither downstream stage repeats full-scope adversarial discovery.
 
 ## Coordinator commands
 

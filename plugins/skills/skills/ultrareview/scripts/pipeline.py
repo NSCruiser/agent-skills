@@ -415,7 +415,7 @@ def validate_scope(value: object, stage: str = "init", task_id: str = "scope") -
     keys = {"schema_version", "repository_path", "review_kind", "target", "comparison_base",
             "topic", "output_language", "exclusions", "instruction_files", "finding_standard",
             "baseline_worktree_status"}
-    optional = {"evidence_repositories"}
+    optional = {"evidence_repositories", "effective_instructions"}
     require(isinstance(value, dict), stage, task_id, "invalid_type", "$")
     present_optional = optional & set(value)
     mapping = exact_keys(value, keys | present_optional, stage, task_id, "$")
@@ -434,6 +434,9 @@ def validate_scope(value: object, stage: str = "init", task_id: str = "scope") -
                 stage, task_id, "$.review_kind")
     nonempty_string(mapping["target"], stage, task_id, "$.target")
     nonempty_string(mapping["output_language"], stage, task_id, "$.output_language")
+    if "effective_instructions" in mapping:
+        string_list(mapping["effective_instructions"], stage, task_id,
+                    "$.effective_instructions", nonempty=True)
     if mapping["review_kind"] == "topic":
         require(mapping["comparison_base"] is None, stage, task_id, "invalid_value", "$.comparison_base")
         nonempty_string(mapping["topic"], stage, task_id, "$.topic")
