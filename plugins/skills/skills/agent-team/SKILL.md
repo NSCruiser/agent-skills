@@ -1,6 +1,6 @@
 ---
 name: agent-team
-description: Evaluate and coordinate subagents when a substantial task may contain independent investigation, implementation, or review work. Read before deciding whether to delegate; handle simple questions, small edits, and quick lookups directly.
+description: Choose subagent roles by judgment demands, task clarity, and total completion cost, then coordinate useful independent assignments. Read before deciding whether to delegate; handle straightforward questions, routine edits with settled requirements, and quick factual lookups directly.
 ---
 
 # Agent Team
@@ -11,30 +11,55 @@ Where active session rules permit delegation requested by an applicable skill, t
 
 Delegate when all three conditions hold:
 
-- Clear boundary: the scope, expected result, and acceptance criteria can be stated.
+- Bounded ownership: the question, constraints, and useful deliverable can be stated. An investigation or design assignment may have an unknown solution; its deliverable can be an evidence-backed diagnosis or proposal with explicit tradeoffs.
 - Independent execution: the child can progress without repeated decisions from the main agent or overlapping writes.
 - Net benefit: parallel progress, substantial discovery, or a specific independent check is worth briefing, waiting, verification, and integration.
 
 Use the smallest useful team. Keep tightly coupled steps in the main agent. For review, identify the uncertainty or failure mode to examine; complexity alone or a generic desire for another opinion is insufficient. Complete the work directly when no assignment qualifies.
 
-## Roles
+## Role selection
 
-| Assignment | Role | Model | Effort | `fork_turns` |
+Choose one role from the table for each assignment and apply its model, reasoning effort, and context policy. The role is the selection unit. Judge the hardest unresolved decision: how much the agent must infer, which assumptions it must question, and how difficult a wrong answer would be to detect. Task length, file count, read-only access, and passing mechanical checks do not measure these demands.
+
+| Role | Assignment | Model | Effort | `fork_turns` default |
 |---|---|---|---|---|
-| Read-only lookup and source collection | `scout` | `gpt-5.6-sol` | `low` | `"none"` |
-| Low-stakes, fully specified tasks with inexpensive acceptance checks | `light_worker` | `gpt-5.6-luna` | `high` | `"none"` (required) |
-| Bounded implementation or execution | `worker` | `gpt-5.6-sol` | `medium` | `"none"` |
-| Complex independent implementation, diagnosis, or judgment-led design | `senior_worker` | `gpt-6-astra` | `high` | `"none"` |
-| Routine correctness and requirements coverage | `reviewer` | `gpt-5.6-sol` | `high` | `"none"` |
-| Complex, consequential, or judgment-led review, including unresolved findings | `senior_reviewer` | `gpt-6-astra` | `high` | `"none"` |
+| `scout` | Lookup and source collection for a defined question | `gpt-5.6-sol` | `low` | `"none"` |
+| `light_worker` | Low-stakes transformations with supplied rules and cheap checks | `gpt-5.6-luna` | `high` | `"none"` (required) |
+| `worker` | Bounded investigation or implementation within a settled direction | `gpt-6-astra` | `low` | `"none"` |
+| `senior_worker` | Ambiguous or difficult investigation, design, or implementation | `gpt-6-astra` | `high` | `"none"` |
+| `reviewer` | Correctness and coverage against explicit requirements | `gpt-6-astra` | `low` | `"none"` |
+| `senior_reviewer` | Judgment-led or consequential review, including unresolved difficult findings | `gpt-6-astra` | `high` | `"none"` |
+| `advisor` | Exceptional difficulty or ambiguity requiring a high-level verdict | `gpt-6-astra` | `xhigh` (Extra High) | `"none"` |
 
-These are defaults except where marked required; honor explicit model choices and use supported runtime settings. Registered custom roles are optional. Both review roles are read-only leaves with the same evidence requirements. Select one role appropriate to each review scope.
+These bundles are the defaults except where marked required. Honor explicit user model and budget choices. Registered custom roles are optional; apply the selected role through the active interface as described in [runtime-compatibility.md](references/runtime-compatibility.md).
 
-When delegating work whose primary difficulty is aesthetic quality, design taste, product or interaction judgment, or high-level intuition under ambiguous criteria, use `senior_worker` with `gpt-6-astra` and `high` effort. For a read-only assessment of that work, use `senior_reviewer` at the same model and effort. This includes UI/UX critique, visual hierarchy, typography, and deciding whether an experience feels polished. Do not route these judgments to Sol or Luna merely because the code change is small, reversible, or easy to compile; mechanical checks do not establish design quality. Implementation of an already settled design and routine evidence collection can still use the lighter roles. The delegation benefit test still applies.
+Use `senior_worker` when the work depends on interpreting intent, discovering hidden constraints, inventing an approach, weighing conflicting goals, or judging quality under incomplete criteria. Aesthetic judgment is one example of this broader need for context-sensitive judgment. Use `senior_reviewer` for an independent assessment of a proposed or completed result with those demands. Both review roles are read-only leaves with the same evidence requirements; read-only investigation can still belong to `senior_worker` when framing and synthesis are the deliverable.
 
-Context defaults favor self-contained assignments. Except for Luna High's required fresh context, use the smallest positive `fork_turns` count that preserves needed decisions, or `"all"` when the full history is necessary. Full-history forks may require inheriting the parent's model and effort; follow [runtime-compatibility.md](references/runtime-compatibility.md). Required fresh context also applies to retries; if inherited turns are essential, keep the work in the main agent or choose another suitable role.
+Use `worker` for substantial execution and routine decisions within a settled direction, and `scout` for collecting evidence to answer a defined question. Use `light_worker` only when the inputs and rules are supplied, little inference is needed, mistakes are cheap to correct, and verification costs less than doing the work.
 
-Use `light_worker` when the inputs and transformation rules are supplied, mistakes are cheap to correct, and the main agent can verify the result inexpensively. Examples include routine localization, extraction into a supplied schema, and mechanical edits with an explicit mapping. Use `worker` or `senior_worker` when the assignment requires discovery, ambiguous judgment, or consequential decisions. A short task is not necessarily low-stakes; the delegation benefit test still applies.
+Select the role with the lowest expected cost to an accepted result at the required quality: initial work, context, tool calls, supervision, verification, retries, and integration. A senior role can cost less overall by finding the right approach in fewer steps. Assign the appropriate role directly; trying cheaper roles first is unnecessary when the judgment demands are already clear. Apply the selected role's effort setting; extra effort is not a substitute for choosing the appropriate role.
+
+Use `advisor` very sparingly, for a focused decision whose exceptional difficulty, vagueness, or need for a high-level verdict warrants reasoning beyond `senior_worker` or `senior_reviewer`. Its expected decision value must justify the extra usage and consultation cost. Ordinary ambiguity, routine architecture work, and standard consequential reviews belong to the senior roles. The advisor is a read-only leaf: provide the decisive question, relevant evidence, constraints, and any competing interpretations; ask for a recommendation or verdict, its rationale, material uncertainty, and what evidence would change it. The main agent owns the decision and follow-through. Consult directly when the need is evident; prior failure in another role is not required. Avoid routine second opinions, repeated consultation without new evidence, and making advisor approval a completion gate.
+
+## Model background
+
+These profiles explain the capability and cost assumptions behind the role bundles. They are background context, not a separate selection step or absolute limits on model capability.
+
+- **Astra:** Broad knowledge, strong reasoning, intuition, and judgment. Better suited to vague requests, hidden constraints, connections across domains, and questioning the premise. It has the highest expected per-token cost and usage pressure of these three for comparable work, but better framing and fewer attempts can reduce total completion cost.
+- **Sol:** Diligent, methodical, and careful within a sound problem frame, at lower per-token cost than Astra. Thorough local execution can still miss a flawed premise or the larger goal, which makes purpose and settled constraints valuable context.
+- **Luna:** Very low per-token cost for narrow, repetitive work with explicit rules. Its limited ability to infer missing intent or rules makes supplied inputs and cheap acceptance checks central to reliable use.
+
+Per-token pricing and plan usage limits are different measures. Use current [model guidance](https://learn.chatgpt.com/docs/models) and [usage guidance](https://learn.chatgpt.com/docs/pricing) when exact cost or availability matters, rather than assuming fixed ratios or guaranteed savings.
+
+## Context
+
+Default to a self-contained packet with `fork_turns: "none"`. For roles other than `light_worker`, inherit turns when doing so materially helps the task or lowers total cost, using the smallest useful positive count or `"all"` when the full history is beneficial. The `light_worker` role (Luna) requires fresh context, including retries; otherwise keep the work in the main agent or choose another suitable role. Full-history forks may require inheriting the parent's model and effort; follow [runtime-compatibility.md](references/runtime-compatibility.md).
+
+## Handoffs and reassignment
+
+Keep judgment with the agent that understands the problem. After a direction is settled, hand off execution only when the remaining work is substantial and the decisions, constraints, and acceptance checks can be transferred cheaply. A `worker` can own the implementation; a `light_worker` can own eligible mechanical portions. If explaining and checking the handoff would cost more than finishing, let the current agent finish. Use each role only where it adds value; there is no fixed sequence of roles.
+
+Reassess the assignment when evidence exposes missing rules, conflicting assumptions, a broader dependency, or repeated corrections without convergence. Have the child return the decisive evidence, completed work, and unresolved question. The main agent can resolve a small gap, retain the work, or assign the remaining problem directly to a suitable role. A `light_worker` assignment may need a `worker` for bounded investigation or implementation, or a `senior_worker` when the gap requires framing or judgment. Avoid repeated prompting or increased effort as a way to compensate for a role mismatch. Stop any active writer before transferring ownership.
 
 ## Coordination and completion
 

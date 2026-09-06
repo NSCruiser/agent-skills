@@ -1,31 +1,31 @@
 # Runtime compatibility
 
-Read this reference when the active interface cannot directly apply the chosen role, model, reasoning effort, or context. Use the exposed schema and runtime metadata to resolve known incompatibilities before the first call.
+Read this reference when applying the selected role's model, reasoning effort, and context policy to the active interface. Use the exposed schema and runtime metadata to resolve known incompatibilities before the first call.
 
 ## Roles, models, and effort
 
-The defaults live in [SKILL.md](../SKILL.md). Custom roles are optional. Select one only when the active interface exposes a role selector, the role is registered, and its configuration fits the assignment. Use its configured settings without duplicate model or effort overrides.
+Choose the assignment's role in [SKILL.md](../SKILL.md). A registered custom role is an optional way to apply that choice when the active interface exposes a role selector and the registered configuration matches the selected role's settings. Use that selector without duplicate model or effort overrides.
 
-Otherwise omit the role selector, identify the job in `task_name` and the message, and pass the chosen model and effort through supported fields. A task name does not select a persistent custom role. Do not assume that a file on disk is registered in the current session.
+Otherwise omit the role selector, identify the selected role and job in `task_name` and the message, and pass the role's bundled model and effort through supported fields. These fields implement the role choice; they are not a separate model selection step. A task name does not select a persistent custom role. Do not assume that a file on disk is registered in the current session.
 
-When a model or effort is unavailable, choose a supported setting suitable for the assignment if the user's instructions allow it; otherwise retain the work in the main agent or report the specific blocker. Reconsider delegation cost if a routine child would inherit an expensive parent configuration. Do not silently substitute a weaker model for difficult work or claim a user's exact model choice was honored after a substitution.
+When the selected role's model or effort is unavailable, choose another listed role only if it fits the assignment and the user's instructions allow it; otherwise retain the work in the main agent or report the specific blocker. Honor explicit user overrides. Reconsider delegation cost if a suitable alternative role is more expensive. Do not silently substitute settings within a role or claim a user's exact model choice was honored after a substitution.
 
-When model or effort fields are absent, omit them and treat the settings as inherited or runtime selected. Confirm effective settings from the tool response or runtime metadata when available; otherwise describe only what was requested. Never invent unsupported fields.
+When model or effort fields are absent, omit them and use runtime metadata to check whether inherited or runtime-selected settings match the role. Apply the same fallback rule to a known mismatch. If effective settings cannot be confirmed, describe the intended role and the unconfirmed settings accurately. Never invent unsupported fields.
 
 ## Context and spawn shape
 
 Apply the context defaults and required settings from [SKILL.md](../SKILL.md). Use `fork_turns: "none"` for fresh context where supported. On an interface exposing only `fork_context`, use `fork_context: false` for fresh context. If neither field is exposed, send a self-contained packet and treat inheritance as runtime selected. If the selected configuration requires fresh context and the runtime cannot guarantee it, keep the work in the main agent or select another suitable role.
 
-When the schema requires full-history forks to inherit the parent model and effort, pass `fork_turns: "all"` and omit model, effort, and any role selector that would override those settings. Preserve the needed history. If a different model is essential, use fresh or recent-turn context only when it can retain the required information; otherwise keep the assignment in the main agent.
+When the schema requires full-history forks to inherit the parent model and effort, use that form only when the inherited settings match the selected role or an explicit user override. Pass `fork_turns: "all"` and omit model, effort, and any role selector that would override those settings. Otherwise use fresh or recent-turn context if it preserves the needed information, select another suitable listed role, or keep the assignment in the main agent.
 
-For an interface exposing `task_name`, `message`, `model`, `reasoning_effort`, and `fork_turns`, a fresh bounded coding assignment can use:
+For an interface exposing `task_name`, `message`, `model`, `reasoning_effort`, and `fork_turns`, applying the `worker` role to a fresh bounded coding assignment can use:
 
 ```json
 {
   "task_name": "worker_cache",
   "fork_turns": "none",
-  "model": "gpt-5.6-sol",
-  "reasoning_effort": "medium",
+  "model": "gpt-6-astra",
+  "reasoning_effort": "low",
   "message": "<task packet, including ownership, permissions, acceptance, and leaf boundary>"
 }
 ```

@@ -1,6 +1,6 @@
 interface:
   display_name: "Agent Team"
-  short_description: "Coordinate job-specific agents for complex work"
-  default_prompt: "Use $agent-team to divide this task into clear assignments, delegate suitable work, and synthesize the results."
+  short_description: "Choose roles by judgment, clarity, and total cost"
+  default_prompt: "Use $agent-team to assess useful delegation, choose roles by judgment demands and total completion cost, apply their settings, and complete the integrated result."
 policy:
   allow_implicit_invocation: true
