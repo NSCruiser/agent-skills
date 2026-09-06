@@ -24,11 +24,13 @@ Use the smallest useful team. Keep tightly coupled steps in the main agent. For 
 | Read-only lookup and source collection | `scout` | `gpt-5.6-sol` | `low` | `"none"` |
 | Low-stakes, fully specified tasks with inexpensive acceptance checks | `light_worker` | `gpt-5.6-luna` | `high` | `"none"` (required) |
 | Bounded implementation or execution | `worker` | `gpt-5.6-sol` | `medium` | `"none"` |
-| Complex independent implementation or diagnosis | `senior_worker` | `gpt-6-astra` | `high` | `"none"` |
+| Complex independent implementation, diagnosis, or judgment-led design | `senior_worker` | `gpt-6-astra` | `high` | `"none"` |
 | Routine correctness and requirements coverage | `reviewer` | `gpt-5.6-sol` | `high` | `"none"` |
-| Complex or consequential review, including unresolved findings | `senior_reviewer` | `gpt-6-astra` | `high` | `"none"` |
+| Complex, consequential, or judgment-led review, including unresolved findings | `senior_reviewer` | `gpt-6-astra` | `high` | `"none"` |
 
 These are defaults except where marked required; honor explicit model choices and use supported runtime settings. Registered custom roles are optional. Both review roles are read-only leaves with the same evidence requirements. Select one role appropriate to each review scope.
+
+When delegating work whose primary difficulty is aesthetic quality, design taste, product or interaction judgment, or high-level intuition under ambiguous criteria, use `senior_worker` with `gpt-6-astra` and `high` effort. For a read-only assessment of that work, use `senior_reviewer` at the same model and effort. This includes UI/UX critique, visual hierarchy, typography, and deciding whether an experience feels polished. Do not route these judgments to Sol or Luna merely because the code change is small, reversible, or easy to compile; mechanical checks do not establish design quality. Implementation of an already settled design and routine evidence collection can still use the lighter roles. The delegation benefit test still applies.
 
 Context defaults favor self-contained assignments. Except for Luna High's required fresh context, use the smallest positive `fork_turns` count that preserves needed decisions, or `"all"` when the full history is necessary. Full-history forks may require inheriting the parent's model and effort; follow [runtime-compatibility.md](references/runtime-compatibility.md). Required fresh context also applies to retries; if inherited turns are essential, keep the work in the main agent or choose another suitable role.
 

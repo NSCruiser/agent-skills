@@ -6,7 +6,7 @@ Use the model defaults in [SKILL.md](../SKILL.md). Read this reference when cont
 
 Split by an independently answerable question, resource, or subsystem. Keep tightly coupled work with the agent that has the relevant context. A `worker` can implement code, investigate, or perform routine execution within its assigned scope.
 
-Use `senior_worker` for a difficult independent problem. If the difficulty comes from dependencies on the main agent's ongoing decisions, keep that work in the main agent. When a child encounters uncertainty that changes scope, permissions, or a shared interface, have it return the evidence and the specific decision needed. The main agent can resolve that decision, take over, or reassign the remaining bounded work at an appropriate capability level. Preserve useful findings when doing so.
+Use `senior_worker` for a difficult independent problem, including the aesthetic and high-level judgment assignments defined in [SKILL.md](../SKILL.md). Small implementation scope does not make those judgments routine work. If the difficulty comes from dependencies on the main agent's ongoing decisions, keep that work in the main agent. When a child encounters uncertainty that changes scope, permissions, or a shared interface, have it return the evidence and the specific decision needed. The main agent can resolve that decision, take over, or reassign the remaining bounded work at an appropriate capability level. Preserve useful findings when doing so.
 
 Name assignments `<job>_<scope>`, such as `scout_auth`, `worker_cache`, or `senior_reviewer_migration`. Names identify work and ownership; select models through the active interface.
 
@@ -32,7 +32,7 @@ For leaves, explicitly say to complete the assignment directly without spawning 
 
 ## Independent review and integration
 
-Use `reviewer` for routine, directly verifiable changes and `senior_reviewer` for complex concurrency, security boundaries, data integrity, cross-component reasoning, or consequential uncertainty. Select the appropriate role directly. When a completed review leaves a difficult question unresolved, give a senior reviewer that question and its evidence, preserving the valid completed checks. Both return findings as read-only leaves; assign implementation fixes to the main agent or a worker within the user's scope.
+Use `reviewer` for routine, directly verifiable changes and `senior_reviewer` for complex concurrency, security boundaries, data integrity, cross-component reasoning, consequential uncertainty, or the aesthetic and high-level judgment assessments defined in [SKILL.md](../SKILL.md). Select the appropriate role directly. When a completed review leaves a difficult question unresolved, give a senior reviewer that question and its evidence, preserving the valid completed checks. Both return findings as read-only leaves; assign implementation fixes to the main agent or a worker within the user's scope.
 
 Ask for actionable findings with evidence, a trigger or counterexample, and an explanation of the consequence. Distinguish observed failures from unverified concerns. The main agent resolves disagreements using the artifacts and evidence, then validates the integrated result against current requirements.
 
